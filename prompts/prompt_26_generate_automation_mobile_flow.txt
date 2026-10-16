@@ -1,0 +1,24 @@
+/generate-automation-from-mobile-flow
+
+# ỨNG DỤNG
+- Platform: [Android / iOS / Cả hai]
+- Loại app: [Native / Flutter / Hybrid có WebView / Không rõ — để agent tự nhận diện]
+- File app: [Đường dẫn .apk / .ipa] HOẶC app đã cài sẵn trên device
+- App package / Bundle ID: [com.example.app]
+- Thiết bị: [Tên emulator/simulator/real device — bỏ trống để agent liệt kê]
+- Tài khoản test: [EMAIL] / [PASSWORD]
+
+# FLOW CẦN AUTOMATE
+[Mô tả từng bước, ví dụ:]
+1. Mở app → màn hình Đăng nhập
+2. Nhập email + mật khẩu → bấm Đăng nhập
+3. Vào tab Đơn hàng → bấm Tạo đơn mới
+4. Điền thông tin → Lưu → kiểm tra đơn xuất hiện trong danh sách
+
+# NẾU LÀ APP FLUTTER
+- Đã bọc Semantics(label:) cho widget cần test chưa: [Rồi / Chưa / Không rõ]
+- Build mode có sẵn: [release / debug / profile]
+
+# MÔI TRƯỜNG
+- Appium server: [http://127.0.0.1:4723 / URL khác]
+- Môi trường dùng chung với người khác không: [Có / Không]

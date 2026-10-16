@@ -1,0 +1,8 @@
+/discover-system
+
+# CONTEXT
+- URL hệ thống: [URL_HE_THONG]
+- Tài khoản: [EMAIL] / [PASSWORD]
+- Tài khoản role khác (nếu có): [ROLE] → [EMAIL] / [PASSWORD]
+- Tài liệu sẵn có (nếu có): [DUONG_DAN_FILE]
+- Môi trường dùng chung: [CO / KHONG]

@@ -1,0 +1,84 @@
+# ============================================================
+# BƯỚC 6: CHUẨN HÓA FORMAT (Template Mapping)
+# ============================================================
+# Đây là prompt độc lập — copy & paste vào bất kỳ AI nào
+# ============================================================
+# CÁCH DÙNG:
+# 1. Gửi prompt này SAU KHI đã review Test Cases ở Bước 5
+# 2. Tùy chỉnh quy tắc TC ID nếu cần
+# 3. Copy bảng output → paste vào Excel/Jira/TestRail
+# ============================================================
+
+---START---
+
+Đây là bước cuối cùng. Hãy **chuẩn hóa format** toàn bộ các Test Cases đã sinh ở Bước 5 vào bảng Markdown chuẩn, phù hợp để copy/paste sang Excel hoặc import vào Jira/Zephyr/Xray/TestRail.
+
+## Bảng chuẩn cần có các cột sau:
+
+| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Expected Result | Priority | Test Data | Automatable | Auto Type | Tags |
+
+## Quy tắc khi lập bảng:
+
+### TC ID
+- Format thống nhất: `[DỰ_ÁN]_[MODULE]_TC_[SỐ]`
+- Ví dụ: `CRM_CUST_TC_001`, `CRM_CUST_TC_002`...
+- Tăng dần liên tục, không nhảy số
+
+[Tùy chỉnh: Nếu bạn muốn quy tắc ID khác, thay thế format ở trên.
+Ví dụ: `TC_LOGIN_001`, `TC_REG_001`...]
+
+### REQ ID
+- **BẮT BUỘC mỗi dòng** — mã requirement mà TC cover (`REQ-XX` từ Traceability Matrix Bước 4)
+- 1 TC cover nhiều REQ → phân cách bằng dấu phẩy
+
+### Test Steps & Expected Result
+- **PHẢI đánh số thứ tự 1. 2. 3. — mỗi bước 1 hành động**, không viết đoạn văn liền, không gộp nhiều hành động vào 1 số
+- Expected Result **đánh số khớp 1-1** với step tương ứng
+- Sử dụng `<br>` để xuống dòng trong cell Markdown
+- Ví dụ trong cell:
+  ```
+  1. Mở trang Login<br>2. Nhập email: test@mail.com<br>3. Nhập password: Test@123<br>4. Click nút "Đăng nhập"
+  ```
+
+### Quy tắc TUYỆT ĐỐI:
+- ❌ **KHÔNG ĐƯỢC** bỏ sót hoặc rút gọn bất kỳ Test Case nào đã sinh ở Bước 5
+- ❌ **KHÔNG ĐƯỢC** tự ý gộp hoặc merge các Test Case khác nhau
+- ✅ Nếu bảng quá dài → Chia thành **Part 1, Part 2, Part 3...** và hỏi tôi để tiếp tục
+
+### Đối soát Coverage (BẮT BUỘC sau bảng TC):
+Xuất thêm **Bảng Đối Soát Coverage** để chứng minh đủ case:
+```
+| REQ ID | Mô tả ngắn | Số TC | TC IDs | Đủ Positive/Negative/Boundary? |
+```
+- Mọi REQ phải có **≥1 TC** — REQ nào 0 TC thì PHẢI quay lại sinh bổ sung trước khi kết thúc
+
+### Đối soát loại kiểm thử 4 vòng (BẮT BUỘC — đặt sau Bảng Đối Soát Coverage):
+
+Bảng Coverage ở trên đếm theo **REQ**, nên bộ TC nông vẫn có thể xanh toàn bộ (8 REQ × 1 TC = đủ). Bảng dưới đây đếm theo **loại kiểm thử** — đây mới là chỗ phát hiện thiếu cả một lớp test:
+
+```
+| Vòng | Nhánh | Trạng thái | TC ID / Lý do |
+|---|---|---|---|
+| 1 | UI cơ bản | ✅ | TC_001–TC_003 (3 TC · 11 biến thể) |
+| 2 | Validation | ✅ | TC_013–TC_028 (đủ 9/9 mục bảng Mật khẩu) |
+| 2 | Error Guessing | 🔴 Thiếu | Chưa có TC bấm Lưu hai lần liên tiếp → bổ sung trước khi xuất |
+| 3 | Database | ➖ | QA không có quyền truy cập DB — đội Dev xác minh |
+| 3 | Logging / Audit | ⏭️ | Có quyền xem Activity Log nhưng module mức rủi ro Thấp — QA Lead quyết định bỏ, rà lại khi nâng lên mức Trung bình |
+| 4 | Performance | ➖ | Không có công cụ tải — đội Hạ tầng, đợt sau |
+```
+
+Quy tắc chấm (đủ 4 trạng thái chuẩn):
+- `✅ Có TC` (dẫn TC ID) · `➖ Không áp dụng` (**sự thật kỹ thuật** — bắt buộc ghi lý do + ĐƠN VỊ CHỊU TRÁCH NHIỆM) · `⏭️ Cố ý bỏ` (**chấp nhận rủi ro thấp** dù QA có năng lực kiểm — bắt buộc ghi lý do + AI QUYẾT ĐỊNH + ĐIỀU KIỆN RÀ LẠI; cấm dùng lẫn `➖` và `⏭️`) · `🔴 Thiếu` (phải bổ sung **trước khi xuất**)
+- 🚫 **KHÔNG sinh TC chỉ để lấp ô** — TC rác làm loãng bộ TC thật
+- ⚠️ **Bốn nhánh không bao giờ được `➖` hoặc `⏭️`:** Toàn bộ `V1 Smoke` (đặc biệt `UI cơ bản`) · `Validation` (V2, khi có field nhập) · `Permission` (V3, khi có ≥2 role) · `Security` (V3, khi chạm dữ liệu người khác)
+- Nếu gộp biến thể vào một TC → ghi **cả số TC và số biến thể**; thiếu con số này thì không ai phát hiện được việc rụng case
+
+---
+
+## Output
+
+Xuất kết quả dưới dạng **Artifact** (file `.md`) gồm: bảng TC chuẩn → **Bảng Đối Soát Coverage** → **Bảng Đối soát loại kiểm thử (4 vòng)**. Để tôi có thể:
+- Copy trực tiếp bảng vào Excel/Google Sheets
+- Import vào Jira/TestRail/Xray
+
+Nếu tổng số Test Cases > 30, hãy chia artifact thành nhiều phần và hỏi tôi "Tiếp tục Part X?" trước khi sinh tiếp.

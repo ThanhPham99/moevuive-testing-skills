@@ -1,0 +1,11 @@
+{
+  "name": "claude-testing-skills",
+  "displayName": "QA Testing Skills (Claude & Antigravity)",
+  "version": "1.0.0",
+  "description": "End-to-End AI Manual Testing (AI-RBT 4 Modes x 4 Rings) & Test Automation Skill Suite with Playwright MCP.",
+  "suggestedPrompts": [
+    "/discover-system Khám phá hệ thống và khởi tạo Module Catalog",
+    "/generate-testcases-manual-rbt Sinh bộ Manual Test Cases theo chuẩn AI-RBT",
+    "/browser-mode Kiểm tra trạng thái trình duyệt Headless/Headed"
+  ]
+}

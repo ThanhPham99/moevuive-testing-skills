@@ -1,0 +1,36 @@
+/update-automation-from-impact
+
+# CONTEXT
+- Mode: [PLAN (chỉ lập kế hoạch) / APPLY (sửa code + chạy lại)]
+- Ticket gây thay đổi: [VD: TICKET-123 — để trống nếu không có]
+
+# DELTA — TEST CASE ĐÃ ĐỔI
+[Chọn 1 trong 2 cách:]
+
+## Cách 1: Delta TC List (từ /update-testcases-from-impact) — KHUYẾN NGHỊ
+- File path: [VD: docs/testcases/project/impact/impact_plan_TICKET-123.md]
+- Hoặc dán bảng "Delta TC List" vào đây:
+```
+[DÁN BẢNG DELTA TC LIST]
+```
+> Chưa chạy /update-testcases-from-impact thì làm nó TRƯỚC — TC còn mô tả hành vi cũ
+> thì script sửa xong vẫn sai kỳ vọng, mà test vẫn xanh nên không ai phát hiện.
+
+## Cách 2: Tự liệt kê TC đã đổi
+| TC ID | Đổi cái gì |
+|---|---|
+| [CRM_PRJ_TC_018] | [Deadline đổi từ tuỳ chọn sang bắt buộc — expected result đổi] |
+| [CRM_PRJ_TC_031] | [Chức năng bị gỡ — archive] |
+
+# NGUỒN ĐỐI CHIẾU
+- File test cases hiện hành (nội dung TC SAU khi đổi): [VD: docs/testcases/project/test_cases_project.md]
+- Thư mục automation: [VD: src/tests/ + src/pages/]
+- RTM (nếu có — map nhanh và chắc hơn): [VD: docs/traceability_matrix.md / "Không có"]
+
+# TRUY CẬP HỆ THỐNG (chỉ cần khi thay đổi kéo theo field/màn hình mới → phải inspect DOM)
+- URL: [VD: https://crm.example.com]
+- Cần đăng nhập: [Có — tài khoản đã lưu ở .env / Không]
+
+# TÙY CHỌN
+- Giới hạn phạm vi: [VD: "Chỉ module Project" / để trống = toàn bộ TC trong delta]
+- Có chạy hồi quy các test cùng Page Object không: [Có (khuyến nghị) / Không]

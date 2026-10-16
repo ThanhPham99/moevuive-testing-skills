@@ -1,0 +1,77 @@
+# ============================================================
+# BƯỚC 4: ĐẢM BẢO ĐỘ BAO PHỦ (Traceability & Gap Analysis)
+# ============================================================
+# Đây là prompt độc lập — copy & paste vào bất kỳ AI nào
+# ============================================================
+# CÁCH DÙNG:
+# 1. Gửi prompt này SAU KHI đã review kết quả phân rã ở Bước 3
+# 2. Review danh sách scenarios AI sinh ra
+# 3. Bổ sung thêm scenarios nếu thiếu
+# 4. Xác nhận hoàn tất → sang Bước 5
+# ============================================================
+
+---START---
+
+Từ kết quả phân rã Module ở Bước 3, hãy xây dựng **Ma trận Truy xuất Yêu cầu (Traceability Matrix)** để đảm bảo độ bao phủ toàn diện (Coverage).
+
+## Nhiệm vụ:
+
+### 1. Traceability Mapping
+
+Map từng Module/Sub-module hoặc Rule logic với một **mã Yêu cầu định danh**:
+- Format: `REQ-01`, `REQ-02`, `REQ-03`...
+- Mỗi yêu cầu phải có mô tả ngắn gọn
+
+Trình bày dạng bảng:
+| REQ ID | Module | Mô tả Yêu cầu |
+|--------|--------|----------------|
+
+### 2. Gap Analysis (Kiểm tra thiếu sót)
+
+Kiểm tra chéo (Cross-check) xem có bất kỳ thông tin nào trong tài liệu gốc bị **thiếu** trong danh sách phân rã:
+- Chức năng chưa được map
+- Điều kiện đầu vào chưa được liệt kê
+- Quy tắc nghiệp vụ (Business Rule) bị bỏ sót
+
+**Nếu phát hiện thiếu sót, báo cáo cụ thể.**
+
+### 3. High-Level Test Scenarios
+
+Liệt kê các kịch bản kiểm thử ở **cấp độ High-Level** cho từng Module.
+
+Mỗi kịch bản chỉ cần **1 câu mô tả cốt lõi ngắn gọn**, và **PHẢI xếp theo 4 vòng kiểm thử**:
+
+```
+VÒNG 1 – SMOKE            → UI cơ bản · Open form · Display · Input valid · Save · Verify data
+VÒNG 2 – FUNCTIONAL       → UI Behavior · Required · Validation · EP · BVA · Business Rule ·
+                            Decision Table · State Transition · Dependency · Use Case ·
+                            Save/Edit/Delete · Error Guessing
+VÒNG 3 – TECHNICAL        → Permission · Security · API · Database · Integration · Logging/Audit
+VÒNG 4 – NON-FUNCTIONAL   → Compatibility · Responsive · Accessibility · Performance ·
+                            Regression · E2E
+```
+
+Trình bày dạng:
+| Vòng | Nhánh | REQ ID | Module | Scenario ID | Mô tả Scenario |
+|---|---|--------|--------|-------------|-----------------|
+
+**Sau bảng, chấm sơ bộ TỪNG nhánh** — `✅ sẽ sinh TC` / `➖ không áp dụng` (bắt buộc ghi lý do + **ai chịu trách nhiệm**):
+
+| Vòng | Nhánh | Sẽ sinh? | Ghi chú |
+|---|---|---|---|
+| 1 | UI cơ bản | ✅ | 3 màn hình |
+| 3 | Database | ➖ | QA không có quyền truy cập DB — đội Dev xác minh |
+| 4 | Performance | ➖ | Không có công cụ tải — đội Hạ tầng, đợt sau |
+
+⚠️ **Ba nhánh không bao giờ được `➖`:** `UI cơ bản` (V1) · `Validation` (V2, khi có field nhập) · `Permission` (V3, khi hệ thống có ≥2 role).
+
+🚫 **KHÔNG** thêm kịch bản chỉ để lấp ô — nhánh không áp dụng thì ghi `➖`, kịch bản rác làm loãng bộ TC thật.
+
+---
+
+⏸️ **SAU KHI HOÀN THÀNH**, hãy dừng lại để tôi review danh sách scenarios **và bảng chấm 4 vòng**.
+
+> 💡 Bảng 4 vòng là chỗ chặn rẻ nhất: nhìn một bảng là biết bộ TC sắp sinh có bỏ sót cả một lớp không (hay mất nhất: lớp giao diện ở Vòng 1), **trước khi** tốn công sinh chi tiết ở Bước 5.
+Tôi sẽ bổ sung thêm hoặc xác nhận để sang Bước 5 sinh Test Case chi tiết.
+
+> ⚠️ **Đây là điểm chốt chặn nhân sự (Human Checkpoint).** Tester cần tự đánh giá rủi ro (Risk Assessment) cho từng Module trước khi cho AI sinh kịch bản chi tiết.

@@ -1,0 +1,15 @@
+{
+  "name": "claude-testing-skills",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AI-RBT Manual Testing & Test Automation Skill Suite for Claude Code & Google Antigravity",
+  "scripts": {
+    "test": "node --test scripts/verify-suite.mjs",
+    "check": "node scripts/sync-antigravity.mjs --check && node --test scripts/verify-suite.mjs",
+    "sync": "node scripts/sync-antigravity.mjs",
+    "browser:status": "node scripts/browser-mode.mjs status",
+    "browser:headless": "node scripts/browser-mode.mjs headless",
+    "browser:headed": "node scripts/browser-mode.mjs headed"
+  }
+}
