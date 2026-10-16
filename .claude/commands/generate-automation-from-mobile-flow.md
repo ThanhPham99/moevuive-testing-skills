@@ -17,10 +17,10 @@ Tự động hóa luồng kiểm thử Mobile App (Android / iOS) bằng cách k
   - `PIPELINE` (Khuyên dùng): Kết nối thiết bị -> Đi qua từng bước trên app -> Dump XML Hierarchy thật -> Sinh Screen Object + Test Script -> Chạy kiểm증 & tự sửa lỗi (Self-Healing).
 
 ## Context Pointers (Lazy-Load On Demand)
-- **Mobile ADB / Appium Exploration & XML Dump**: `.claude/skills/skills-mobile-debug-agent/SKILL.md`
-- **Appium Java Architecture & Screen Templates**: `.claude/skills/skills-framework-architect/references/TEMPLATES_APPIUM_JAVA.md`
-- **Locator Strategy (Accessibility ID / Android UIAutomator / iOS Class Chain)**: `.claude/skills/skills-smart-locator-agent/SKILL.md`
-- **Automation Coding Standards**: `.claude/skills/skills-qa-automation-engineer/SKILL.md`
+- **Mobile ADB / Appium Exploration & XML Dump**: [`.claude/skills/skills-mobile-debug-agent/SKILL.md`](../skills/skills-mobile-debug-agent/SKILL.md) · [`APPIUM_CAPABILITIES_AND_GESTURES.md`](../skills/skills-mobile-debug-agent/references/APPIUM_CAPABILITIES_AND_GESTURES.md)
+- **Appium Java Architecture & Screen Templates**: [`TEMPLATES_APPIUM_JAVA.md`](../skills/skills-framework-architect/references/TEMPLATES_APPIUM_JAVA.md)
+- **Locator Strategy (Accessibility ID / Android UIAutomator / iOS Class Chain)**: [`.claude/skills/skills-smart-locator-agent/SKILL.md`](../skills/skills-smart-locator-agent/SKILL.md)
+- **Automation Coding Standards**: [`.claude/skills/skills-qa-automation-engineer/SKILL.md`](../skills/skills-qa-automation-engineer/SKILL.md)
 
 ## Execution Steps
 

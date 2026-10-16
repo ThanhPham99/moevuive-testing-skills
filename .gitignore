@@ -154,3 +154,6 @@ task.md
 # Local CodeGraph SQLite index (unnecessary for Markdown skill suite)
 .codegraph/
 
+# Local issue tracker & architecture scratch specs
+.scratch/
+

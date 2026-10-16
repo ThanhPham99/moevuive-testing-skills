@@ -3,7 +3,7 @@
 Trang web nhỏ gọn để **xem và gộp kết quả kiểm thử từ file Markdown** — thống kê, lọc, so sánh giữa các lần chạy, và xem độ phủ automation.
 
 Dùng để đọc output của:
-`/execute-test-cases` (`execution_report.md`) · `/retest-fixed-bugs` (`retest_report.md`) · `/generate-traceability-matrix` (`traceability_matrix.md`)
+`/execute-test-cases` (`execution_report.md`) · `/retest-fixed-bugs` (`retest_report.md`) · `/generate-traceability-matrix` (`traceability_matrix.md`) · `/generate-test-summary-report` (`test_summary_<mốc>_<timestamp>.md`)
 
 ---
 
@@ -17,6 +17,7 @@ Kéo thả, hoặc bấm **+ Import thư mục** / **+ Import file .md** ở gó
 docs/executions/customers/run_1785700456/execution_report.md
 docs/executions/customers/retest_1785700999/retest_report.md
 traceability_matrix.md
+docs/executions/test_summary_sprint12.md
 ```
 
 Nạp **nhiều file/thư mục** để gộp số liệu và so sánh giữa các lần chạy — mỗi thư mục `run_*` là 1 lần chạy.
@@ -35,13 +36,14 @@ Nạp **nhiều file/thư mục** để gộp số liệu và so sánh giữa c�
 | **Thống kê** | PASS / FAIL / BLOCKED / SKIPPED · tổng TC · **pass rate = PASS / (PASS + FAIL + BLOCKED)** — SKIPPED không nằm ở mẫu số |
 | **Cảnh báo tự động** | 4 loại — xem mục dưới |
 | **Xoá tất cả** | Nút **Xoá tất cả** cạnh **+ Import file .md** (chỉ hiện khi đã nạp ít nhất 1 file) — xoá hết report + ảnh evidence đã nạp (kể cả trong `localStorage`), quay về màn hình kéo thả trống |
-| **Sidebar** | Danh sách report đã nạp kèm nhãn `RUN` / `RETEST`; click để xem riêng một lần chạy, `×` để gỡ |
+| **Sidebar** | Danh sách report đã nạp kèm nhãn `RUN` / `RETEST` / `RTM` / `SUMMARY`; click để xem riêng một báo cáo, `×` để gỡ |
 | **Lọc** | Theo trạng thái (chip) · theo module · tìm toàn văn trên TC ID, kịch bản, ghi chú, nguyên nhân chặn, Expected/Actual |
 | **Sort** | Click header — TC ID sort theo số tự nhiên (`TC_002` trước `TC_010`) |
 | **Chi tiết** | Click một dòng để mở panel: REQ ID · Priority · bước fail · Expected vs Actual · nguyên nhân chặn · evidence · file nguồn |
 | **So sánh các lần chạy** | Tab riêng — 🆕 Mới fail · 🔁 Fail liên tục · ✅ Vừa được fix · ⚠️ Chuyển sang BLOCKED |
 | **Verify bug** | Tab riêng cho kết quả retest: FIXED / NOT_FIXED / PARTIAL / CANNOT_VERIFY |
 | **Độ phủ automation** | Tab riêng, nạp `traceability_matrix.md` — xem mục dưới |
+| **Tổng hợp Release** | Tab riêng, nạp `test_summary_*.md` — hiển thị khuyến nghị GO / GO có điều kiện / NO-GO, bảng 7 Tiêu chí Exit, kết quả theo Module, vùng chưa kiểm thử và bug đang mở |
 | **Export** | **CSV** và **Excel (.xlsx)** — xuất **đúng tab đang mở** và **đúng phần đang hiển thị** sau lọc/tìm kiếm |
 
 ---
@@ -53,14 +55,15 @@ Trả lời câu hỏi *"test case manual nào đã có script automation"*.
 > ⚠️ **Nguồn phải là `traceability_matrix.md`** do `/generate-traceability-matrix` sinh ra — workflow đó quét **code thật** để biết TC nào có script.
 > **Đừng** dùng cột `Automatable` trong file test case: đó là **dự định** lúc viết TC, không phải **thực tế** đã automate. Hai con số này lệch nhau rất nhanh.
 
-**Bốn trạng thái, suy ra từ dữ liệu chứ không đọc cột `Trạng thái` của file:**
+**Năm trạng thái, suy ra từ dữ liệu và phạm vi REQ:**
 
 | Trạng thái | Điều kiện |
 |---|---|
 | ✅ **Đã automate** | Mọi TC của REQ đều có script |
 | 🟣 **Automate một phần** | Có script nhưng chưa phủ hết TC — VD `customers.spec.ts (1/3)` |
 | 🟡 **Mới có TC thủ công** | Có TC, chưa có script nào |
-| 🔴 **Chưa có TC** | REQ chưa được viết test case |
+| 🔴 **Chưa có TC** | REQ trong phạm vi nhưng chưa được viết test case |
+| ⚪ **Ngoài phạm vi** | REQ có trạng thái `⚪ Out of scope` / `Ngoài phạm vi` — tách khỏi mẫu số tính tỷ lệ REQ có test case |
 
 Trạng thái 🟣 là lý do phải tự suy thay vì đọc cột có sẵn: RTM ghi `🟡 Manual only` cho dòng đã automate 1/3, gộp vào một nhóm là **thổi phồng độ phủ**.
 
@@ -85,8 +88,9 @@ Hai nút `↓ CSV` và `↓ Excel` xuất **đúng tab đang mở**, đã áp b�
 |---|---|
 | Kết quả TC | `Tổng hợp` + mỗi **lần chạy** một sheet (khi nạp > 1 lần chạy) |
 | Độ phủ automation | `Tổng hợp` + `TC chưa automate` + `Orphan test` + `Mapping suy luận` + `Module chưa có tài liệu` |
+| Tổng hợp Release | `Tiêu chí Exit` + `Kết quả theo Module` + `Vùng chưa kiểm thử` + `Bug đang mở` + `Độ phủ RTM` |
 
-Tên file dạng `execution_report_<yyyyMMdd-HHmmss>.xlsx` / `do_phu_automation_<...>.xlsx`.
+Tên file dạng `execution_report_<yyyyMMdd-HHmmss>.xlsx` / `do_phu_automation_<...>.xlsx` / `test_summary_report_<...>.xlsx`.
 
 > File `.xlsx` được dựng thủ công bằng zip + Office Open XML (không dùng SheetJS — thư viện ~900 KB sẽ làm phình `bundle.html` vốn phải mở offline được). Zip ghi ở chế độ STORE (không nén) nên file to hơn bình thường.
 
@@ -159,6 +163,6 @@ Gom report theo **module**, sắp theo Run ID (số trong `run_1785700456`) tăn
 
 Trang này chỉ có 3 bảng và một panel chi tiết — không đủ phức tạp để cần component framework, mà lại phải sống được khi mở bằng `file://` trên máy bất kỳ. Cách dùng với người dùng cuối là **y hệt**: double-click `bundle.html`, kéo thả file `.md`.
 
-Muốn đổi giao diện thì sửa thẳng trong `bundle.html` — CSS nằm ở `<style>` đầu file, logic ở `<script>` cuối file, chia sẵn 4 khối: `PARSER` · `STATE` · `DERIVED` · `RENDER`.
+Muốn đổi giao diện thì sửa thẳng trong `bundle.html` — CSS nằm ở `<style>` đầu file, logic UI ở `<script>` cuối file (`STATE` · `DERIVED` · `RENDER`). Riêng khối nhân xử lý dữ liệu nằm giữa cặp marker `/* __VIEWER_CORE_START__ */ ... /* __VIEWER_CORE_END__ */` được đồng bộ tự động từ [`../viewer-core.mjs`](../viewer-core.mjs) khi chạy `npm run sync` (`node scripts/sync-antigravity.mjs`).
 
 Màu thương hiệu `#4DBD44` khai báo ở biến CSS `--brand`, đồng bộ với `testcases-viewer`.

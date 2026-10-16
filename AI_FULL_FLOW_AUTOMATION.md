@@ -173,7 +173,7 @@ Nói *"sửa luôn"* / *"dọn giùm"* → AI tự chuyển sang **FIX**.
 | **RUN** (mặc định) | Chạy suite (toàn bộ / theo tag / theo module) → phân loại failure theo root cause → đề xuất |
 | **FIX** | Như RUN + tự sửa nhóm sửa được + chạy lại (tối đa 3 vòng, không hỏi lại giữa chừng) |
 
-Mặc định chạy **Headless (`1920×1080`, tắt GPU)** xuyên suốt mọi chặng. Khi muốn mở cửa sổ xem trực tiếp trên màn hình, truyền `HEADLESS=false` / `--headed` hoặc dùng `/browser-mode headed`.
+Mặc định chạy **Headless (`1920x1080`, tắt GPU)** xuyên suốt mọi chặng. Khi muốn mở cửa sổ xem trực tiếp trên màn hình, truyền `HEADLESS=false` / `--headed` hoặc dùng `/browser-mode headed` ([`prompt_29`](prompts/prompt_29_browser_mode.txt)).
 
 ### 🚨 Luật quan trọng nhất của cả flow
 
@@ -220,7 +220,7 @@ Ba workflow, **ba tín hiệu khác nhau**. Chọn sai là chữa nhầm bệnh:
 
 Đối chiếu locator trong Page Object với DOM thực tế, bắt cả 3 loại: đã gãy · sắp gãy (dynamic class `css-1a2b3c`, XPath vị trí) · **match sai element** (nguy hiểm nhất — vẫn xanh nhưng test sai chỗ).
 
-Mặc định inspect DOM ở **Headless (`1920×1080`)** qua Playwright MCP (hoặc chuyển sang **Headed (`1600×750`)** bằng `/browser-mode headed` nếu cần quan sát trực tiếp). Locator mới phải match **đúng 1 element** và **đúng element cần thao tác**.
+Mặc định inspect DOM ở **Headless (`1920x1080`)** qua Playwright MCP (hoặc chuyển sang **Headed (`1600x750`)** bằng `/browser-mode headed` nếu cần quan sát trực tiếp). Locator mới phải match **đúng 1 element** và **đúng element cần thao tác**.
 
 ### `/update-automation-from-impact` — requirements đổi
 
@@ -245,13 +245,14 @@ Mắt xích **cuối** của chuỗi delta 3 tầng:
 
 ---
 
-## Chặng 6 — Ma trận truy vết (cột automation)
+## Chặng 6 — Ma trận truy vết (cột automation) & Artifact Integrity Gate
 
 ```
 /generate-traceability-matrix
 ```
 
 📋 Prompt mẫu: [`prompts/prompt_13_generate_traceability_matrix.txt`](prompts/prompt_13_generate_traceability_matrix.txt)
+⚡ CLI kiểm tra & trích xuất tức thời (<50ms): `node scripts/validate-docs.mjs --check` và `node scripts/validate-docs.mjs --rtm`
 
 Cùng một command với flow manual, nhưng ở đây đọc **tầng 3**: REQ → TC → **script**.
 
@@ -283,8 +284,8 @@ Chỉ chạy khi dự án dùng Jira/Xray. Cần lấy requirements/ticket từ 
 |---|---|---|---|
 | 0 | `/generate-automation-framework` | [`prompt_03`](prompts/prompt_03_create_framework_playwright.txt) | **1 lần** / dự án (bỏ qua nếu đã có framework) |
 | 1 | `/generate-automation-from-testcases` | [`prompt_05`](prompts/prompt_05_convert_manual_to_automation.txt) | **N lần** = số module |
-| 1' | `/generate-automation-from-ui-flow` | — | Khi chưa có TC (web) |
-| 1'' | `/generate-automation-from-mobile-flow` | — | App mobile — Native / Flutter / Hybrid |
+| 1' | `/generate-automation-from-ui-flow` | [`prompt_04`](prompts/prompt_04_generate_script_playwright.txt) | Khi chưa có TC (web) |
+| 1'' | `/generate-automation-from-mobile-flow` | [`prompt_26`](prompts/prompt_26_generate_automation_mobile_flow.txt) | App mobile — Native / Flutter / Hybrid |
 | 1" | `/generate-api-tests-from-swagger` mode FULL | [`prompt_09`](prompts/prompt_09_generate_api_tests.txt) | Hệ thống API |
 | 2 | `/review-automation-code` | [`prompt_06`](prompts/prompt_06_review_automation_code.txt) | 1 lần / bộ script (+ định kỳ) |
 | 3 | `/run-and-fix-tests` | [`prompt_17`](prompts/prompt_17_run_and_fix_tests.txt) | **Mỗi đợt regression / mỗi build** |
@@ -294,8 +295,10 @@ Chỉ chạy khi dự án dùng Jira/Xray. Cần lấy requirements/ticket từ 
 | 5 | `/analyze-flaky-tests` | [`prompt_08`](prompts/prompt_08_analyze_flaky_tests.txt) | Khi test chập chờn |
 | 5 | `/update-automation-from-impact` | [`prompt_19`](prompts/prompt_19_update_automation_from_impact.txt) | Mỗi Impact Report — **sau** `/update-testcases-from-impact` |
 | 6 | `/generate-traceability-matrix` | [`prompt_13`](prompts/prompt_13_generate_traceability_matrix.txt) | Định kỳ / trước release |
-| 7 | `/import-test-results-xray` | — | Mỗi lần cần đồng bộ Xray |
+| 7 | `/import-test-results-xray` | [`prompt_11`](prompts/prompt_11_analyze_test_report.txt) | Mỗi lần cần đồng bộ Xray |
+| ⊹ | `/browser-mode` | [`prompt_29`](prompts/prompt_29_browser_mode.txt) | Chuyển đổi Headless (`1920x1080`) ↔ Headed (`1600x750`) |
 | ⊹ | `/generate-test-data` | [`prompt_07`](prompts/prompt_07_generate_test_data.txt) | Khi cần bộ data nhiều biến thể |
+| ⊹ | `/generate-combinatorial-test-data` | [`prompt_32`](prompts/prompt_32_generate_combinatorial_test_data.txt) | Khi cần data tổ hợp liên module |
 | ⊹ | `/generate-api-mocks` | [`prompt_14`](prompts/prompt_14_generate_api_mocks.txt) | Khi cần test độc lập backend |
 
 ---
@@ -318,10 +321,11 @@ Script chạy tốt nhưng RTM không map được về TC/REQ → chặng 6 x�
 | File | Nội dung |
 |---|---|
 | [`AI_FULL_FLOW_MANUAL.md`](AI_FULL_FLOW_MANUAL.md) | Flow 8 chặng Manual Testing — nguồn của bộ TC mà flow này tiêu thụ |
-| [`CLAUDE.md`](CLAUDE.md) | Quy tắc bắt buộc · Definition of Done · danh sách đầy đủ workflows |
+| [`CLAUDE.md`](CLAUDE.md) · [`AGENTS.md`](AGENTS.md) | Quy tắc bắt buộc · Definition of Done · đồng bộ song song Claude Code & Antigravity qua [`scripts/sync-antigravity.mjs`](scripts/sync-antigravity.mjs) |
+| [`scripts/validate-docs.mjs`](scripts/validate-docs.mjs) | CLI kiểm định toàn vẹn `docs/` (`--check`) & xuất ma trận RTM tức thời (`--rtm`) |
 | [`.claude/rules/automation_rules.md`](.claude/rules/automation_rules.md) | POM · test data · naming · assertion |
 | [`.claude/rules/reporting_rules.md`](.claude/rules/reporting_rules.md) | Allure metadata · step Tiếng Việt · screenshot · thư mục `reports/` |
 | [`.claude/rules/locator_strategy.md`](.claude/rules/locator_strategy.md) | Thứ tự ưu tiên locator (mọi framework) |
 | [`.claude/rules/playwright_rules.md`](.claude/rules/playwright_rules.md) · [`selenium`](.claude/rules/selenium_rules.md) · [`appium`](.claude/rules/appium_rules.md) | Quy tắc riêng từng framework |
-| [`plans/automation/QUICK_START.md`](plans/automation/QUICK_START.md) | Luồng 6 bước bản copy-paste — dùng cho AI agent khác không có slash command của bộ này |
-| [`prompts/README.md`](prompts/README.md) | 32 prompt mẫu copy-paste, chia 7 nhóm tra cứu |
+| [`plans/automation/QUICK_START.md`](plans/automation/QUICK_START.md) | Luồng 6 bước bản copy-paste — dùng cho AI agent khác không dùng trực tiếp slash command |
+| [`prompts/README.md`](prompts/README.md) | 36 prompt mẫu copy-paste (cover đủ 36 workflows), chia 7 nhóm tra cứu |

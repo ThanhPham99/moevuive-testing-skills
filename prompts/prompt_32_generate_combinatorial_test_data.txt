@@ -1,0 +1,19 @@
+/generate-combinatorial-test-data
+
+# CONTEXT
+- File Cross-Module Test Plan nguồn: [VD: docs/testcases/cross_module_pricing_plan.md — sinh từ /generate-cross-module-test-plan]
+- Prefix dữ liệu truy vết: [VD: Auto_CrossMod_]
+
+# MODE
+[Xoá dòng không dùng:]
+- GENERATE (mặc định) — xuất bộ dữ liệu tổ hợp tĩnh (JSON / CSV / Markdown / Data-Driven Fixture) cho từng dòng trong ma trận kết hợp
+- PIPELINE — thực thi tuần tự qua API hoặc UI để tạo sẵn dữ liệu thật xuyên qua chuỗi modules (Upstream -> Downstream)
+
+# ĐỊNH DẠNG ĐẦU RA (Mode GENERATE)
+[Xoá dòng không dùng:]
+- JSON + Markdown Table
+- CSV (import trực tiếp vào runner)
+- TypeScript / Java / Python Data Provider
+
+# GHI CHÚ
+- Mọi bản ghi tạo ra trên môi trường dùng chung (Mode PIPELINE) phải mang prefix `[prefix]_[testName]_[timestamp]` và có script/kế hoạch dọn dẹp ngược thứ tự phụ thuộc

@@ -1,4 +1,5 @@
 /generate-automation-from-testcases
+# (Hoặc dùng /generate-automation-from-ui-flow nếu muốn agent tự mở trình duyệt khám phá UI Flow thực tế trước khi sinh POM + Test)
 
 # CONTEXT
 - Stack: Playwright Test + TypeScript

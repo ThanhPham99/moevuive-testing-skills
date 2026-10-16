@@ -261,7 +261,7 @@ Gửi cho Claude câu lệnh sau:
 Dùng Playwright MCP mở https://anhtester.com rồi chụp snapshot cho tôi xem tiêu đề trang. Không resize.
 ```
 
-**Đạt** khi: một cửa sổ browser **thật sự bật lên**, và Claude trả về nội dung DOM/tiêu đề trang.
+**Đạt** khi: trình duyệt chạy ẩn ở **Headless Mode (`1920×1080`)** mặc định (không bung cửa sổ OS làm choáng màn hình; chỉ bật cửa sổ `1600×750` khi bạn gạt sang **Headed Mode** qua `/browser-mode headed`) và Claude trả về đúng nội dung DOM/tiêu đề trang.
 **Chưa đạt** khi: Claude nói "tôi không có công cụ browser" → xem [mục 4](#4-checklist-nghiệm-thu--xử-lý-lỗi-thường-gặp).
 
 ### 1.7. Cài browser binary (chạy lần đầu có thể thiếu)
@@ -671,8 +671,8 @@ Khi đã tin tưởng output, mở khoá gửi tự động. Ba nguyên tắc b�
 **Playwright MCP**
 - [ ] `node -v` cho ra phiên bản ≥ 18
 - [ ] Server `playwright` hiện **connected** trong `Settings → Developer` (hoặc `claude mcp list`)
-- [ ] Yêu cầu Claude mở một trang bất kỳ → **cửa sổ browser thật sự bật lên**
-- [ ] Cửa sổ browser **vừa màn hình**, không tràn ra ngoài — kiểm bằng `browser_evaluate: () => ({ inner:[innerWidth,innerHeight], outer:[outerWidth,outerHeight] })`, phải thấy `inner` **nhỏ hơn** `outer`
+- [ ] Yêu cầu Claude mở một trang bất kỳ → trả về snapshot DOM chuẩn ở **Headless Mode (`1920×1080`)** mặc định (không mở cửa sổ OS; chỉ mở cửa sổ `1600×750` khi bật **Headed Mode** qua `/browser-mode headed`)
+- [ ] Khi bật **Headed Mode (`1600×750`)**, cửa sổ browser **vừa màn hình**, không tràn ra ngoài — kiểm bằng `browser_evaluate: () => ({ inner:[innerWidth,innerHeight], outer:[outerWidth,outerHeight] })`, phải thấy `inner` **nhỏ hơn** `outer`
 - [ ] Screenshot lưu vào đúng `.playwright-mcp/` **của project này** (không lạc sang project khác)
 
 **Connectors**

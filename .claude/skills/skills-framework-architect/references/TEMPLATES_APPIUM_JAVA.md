@@ -5,6 +5,28 @@
 
 ---
 
+## 0. Cấu trúc thư mục chuẩn — Appium + Java (Maven + TestNG)
+
+```text
+project-root/
+├── pom.xml · testng.xml (parallel="tests" — mỗi <test> là 1 device) · .env.example · .gitignore
+├── capabilities/devices.json     # Caps từng device: udid, systemPort/wdaLocalPort riêng
+├── src/main/java/com/project/
+│   ├── screens/                  # BaseScreen.java (byPlatform), LoginScreen.java, HomeScreen.java
+│   ├── drivers/                  # AppiumDriverFactory.java (ThreadLocal), CapabilitiesManager.java
+│   ├── config/                   # AppConfig.java
+│   └── utils/                    # MobileGestures.java, ScreenshotUtil.java, TestDataGenerator.java
+├── src/test/java/com/project/
+│   ├── base/                     # BaseTest.java
+│   └── tests/                    # LoginTest.java, HomeTest.java
+├── apps/                         # APK/IPA files (.gitkeep)
+├── reports/                      # allure-results/, allure-report/, allure-report-single/, html/, logs/, screenshots/, videos/
+├── test-data/                    # users.json
+└── .github/workflows/appium.yml
+```
+
+---
+
 ## 1. Thread-Safe Appium Driver Factory — `src/main/java/com/project/drivers/AppiumDriverFactory.java`
 
 ```java

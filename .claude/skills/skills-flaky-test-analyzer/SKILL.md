@@ -5,105 +5,56 @@ description: "Diagnose and fix flaky automated tests caused by unstable locators
 
 # Flaky Test Analyzer
 
-Purpose: Identify and resolve unstable automation tests.
+Chẩn đoán nguyên nhân gốc rễ và khắc phục triệt để các bài kiểm thử tự động không ổn định (lúc PASS lúc FAIL — Flaky Tests) theo 2 chế độ: `ANALYZE` (chỉ báo cáo) và `FIX` (sửa code + chạy lặp kiểm chứng).
 
 ---
 
-## When to Use
+## 1. Vai Trò & Khi Nào Sử Dụng
 
-Use this skill when:
-
-- A test passes and fails intermittently
-- Test results are inconsistent across runs
-- CI/CD pipeline has unreliable test results
-
----
-
-## Responsibilities
-
-Detect flaky tests caused by:
-
-- Unstable locators (dynamic classes, positional xpath)
-- Timing issues (race conditions, slow page loads)
-- Incorrect waits (hard sleep instead of smart waits)
-- Environment dependency (data not cleaned up, external service down)
-- Test data conflicts (shared data between parallel tests)
+- **Khi sử dụng:**
+  - Bài test lúc PASS lúc FAIL trên cùng một phiên bản code mà không có thay đổi nghiệp vụ.
+  - Bài test chạy đơn lẻ (`1 worker`) thì PASS nhưng chạy song song (`5 workers`) hoặc chạy trên CI/CD thì FAIL ngẫu nhiên.
+  - Báo cáo test ghi nhận các bài test phải qua `retry` mới xanh.
+- **Điều phối qua:** `/analyze-flaky-tests` (`ANALYZE` / `FIX` modes).
 
 ---
 
-## Analysis Workflow
+## 2. Năm Nhóm Nguyên Nhân Gốc Rễ Gây Flaky
 
-1. **Detect** — Identify the failing test and reproduce the failure
-2. **Inspect** — Read error logs, stack traces, and screenshots
-3. **Classify** — Categorize the root cause (locator / timing / data / environment)
-4. **Fix** — Apply the appropriate fix strategy
-5. **Verify** — Re-run test multiple times to confirm stability
+| Nhóm nguyên nhân | Dấu hiệu nhận diện trong Log / Code | Chiến lược khắc phục chuẩn |
+|---|---|---|
+| 🎯 **Locator không ổn định** | Dùng class động (`css-1n2xyz`), XPath vị trí (`//div[3]/button`), hoặc selector khớp nhiều phần tử | Thay bằng bộ định vị bền vững theo [`.claude/rules/locator_strategy.md`](../../rules/locator_strategy.md) |
+| ⏱️ **Hard Sleep & Race Condition** | Có `waitForTimeout` / `Thread.sleep` / `time.sleep`; thao tác trước khi API/DOM hoàn tất | Thay bằng Web-First Assertions (`expect().toBeVisible()`) hoặc `WebDriverWait` |
+| 📊 **Xung đột Test Data song song** | Fail khi chạy 5 workers do dùng chung bản ghi hoặc trùng key (`Duplicate email/code`) | Sinh dữ liệu độc lập gắn timestamp + worker index (`auto_<test>_<ts>`) |
+| 🔗 **Phụ thuộc trạng thái (Shared State)** | Test B phụ thuộc dữ liệu do Test A tạo ra; chạy riêng lẻ thì FAIL | Cô lập hoàn toàn từng test (`Arrange` tự tạo dữ liệu, `afterEach` tự dọn) |
+| 🎭 **Animation / Overlay che khuất** | `Element is not stable`, `intercepts pointer events` do spinner/toast/modal đang chuyển cảnh | Chờ spinner/overlay ẩn hẳn (`toBeHidden()`) trước khi tương tác |
 
----
-
-## Common Flaky Causes & Fixes
-
-### Unstable Locator
-
-**Problem:**
-```
-//div[3]/button
-.css-1n2xyz-btn
-```
-
-**Fix:** Replace with stable locator following priority in `.claude/rules/locator_strategy.md`:
-- `id`, `data-testid`, `name`, `css selector` (stable), `xpath` (relative)
+> Xem ví dụ code đối chiếu `Sai vs Đúng` và mẫu báo cáo tại [`references/FLAKY_ROOT_CAUSES_AND_FIXES.md`](references/FLAKY_ROOT_CAUSES_AND_FIXES.md).
 
 ---
 
-### Timing Issues
+## 3. Quy Trình Chẩn Đoán & Khử Flaky 5 Bước
 
-**Problem:**
-```java
-Thread.sleep(3000);       // Hard sleep — BAD
-page.waitForTimeout(2000); // Fixed delay — BAD
-```
-
-**Fix:** Use smart waits as defined in `.claude/rules/selenium_rules.md` and `.claude/rules/playwright_rules.md`:
-```java
-// Selenium
-WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
-wait.until(ExpectedConditions.visibilityOfElementLocated(By.id("result")));
-
-// Playwright
-await expect(page.getByRole('button', { name: 'Submit' })).toBeVisible();
-```
+1. **Tái hiện & Thu thập bằng chứng (Detect):** Chạy lặp bài test nghi ngờ (`--repeat-each=5` hoặc chạy song song) ở chế độ **Headless `1920x1080`** để bắt log lỗi, trace và screenshot tại thời điểm fail.
+2. **Đọc Code & Phân tích DOM (Inspect):** Kiểm tra mã nguồn Test + Page Object để tìm hard sleep, locator yếu hoặc biến dùng chung; mở trình duyệt qua Playwright MCP nếu cần kiểm tra hành vi loading/animation thực tế.
+3. **Phân loại & Xuất báo cáo `reports/flaky_test_analysis.md` (Classify — HITL Checkpoint ⏸️):** Chỉ rõ nguyên nhân gốc cho từng bài test kèm đoạn code đề xuất sửa. Dừng chờ user duyệt nếu ở `Mode = FIX`.
+4. **Áp dụng bản sửa (Fix — `Mode = FIX`):** Thay thế bằng smart wait, locator chuẩn và dữ liệu độc lập (tuyệt đối không tăng số giây `sleep` hay gắn `.skip` để che lỗi).
+5. **Kiểm chứng độ ổn định (Verify):** Chạy lại bài test tối thiểu **5 lần liên tiếp** (và chạy chung trong suite song song) đảm bảo **PASS 100% (5/5)** trước khi kết luận đã khử flaky.
 
 ---
 
-### Test Data Conflicts
+## 4. Checklist Ổn Định (Stability Gate)
 
-**Problem:** Tests share mutable data → parallel runs conflict.
-
-**Fix:** Use unique, traceable random data:
-```
-<testName>_<timestamp>@test.com
-```
-
----
-
-## Stability Checklist
-
-After fixing a flaky test, verify:
-
-- [ ] Locator is unique and stable across reloads
-- [ ] No hard sleep or fixed delays
-- [ ] Test data is unique and deterministic
-- [ ] Test is independent (no dependency on other tests)
-- [ ] Test passes 5+ consecutive runs
+- [ ] Bộ định vị duy nhất (`count === 1`) và bền vững qua các lần tải lại trang.
+- [ ] Không còn bất kỳ lệnh `waitForTimeout`, `Thread.sleep`, `time.sleep` cố định nào.
+- [ ] Dữ liệu kiểm thử là duy nhất và có khả năng chạy song song nhiều luồng không đụng độ.
+- [ ] Bài test hoàn toàn độc lập, chạy riêng lẻ hay chạy bất kỳ thứ tự nào đều PASS.
+- [ ] Đã kiểm chứng chạy **PASS 5+ lần liên tiếp**.
 
 ---
 
-## Rules References
+## 5. Tài Liệu Tham Chiếu
 
-The agent MUST follow these rules when analyzing flaky tests:
-
-- `.claude/rules/locator_strategy.md` — Locator stability rules
-- `.claude/rules/automation_rules.md` — General automation best practices
-- `.claude/rules/selenium_rules.md` — Selenium wait strategy
-- `.claude/rules/playwright_rules.md` — Playwright auto-waiting
+- [`references/FLAKY_ROOT_CAUSES_AND_FIXES.md`](references/FLAKY_ROOT_CAUSES_AND_FIXES.md) — Mẫu code khắc phục 5 nhóm Flaky & mẫu báo cáo `flaky_test_analysis.md`
+- [`.claude/rules/locator_strategy.md`](../../rules/locator_strategy.md) — Ma trận ưu tiên bộ định vị chuẩn
+- [`.claude/rules/playwright_rules.md`](../../rules/playwright_rules.md) · [`.claude/rules/selenium_rules.md`](../../rules/selenium_rules.md) · [`.claude/rules/automation_rules.md`](../../rules/automation_rules.md)

@@ -44,6 +44,6 @@ Agent **BẮT BUỘC chạy tuần tự từng bước**, tuyệt đối không 
 - **Đường dẫn Output:** Cập nhật `docs/testcases/README.md`; ghi file chính tại `docs/testcases/<module>/test_cases_<module>.md` (khi vượt ngưỡng `> 40 TC` ở `TÁCH` hoặc `> 50 TC` ở `GỘP` thì tách vào `docs/testcases/<module>/parts/part_NN_<slug>.md` tại ranh giới nhóm chức năng và giữ `test_cases_<module>.md` làm file index). Tạo `task.md` khi tổng TC dự kiến `> 30`.
 - **Chuẩn bảng 13 cột (tương thích `scripts/testcases-viewer`):**
   ```markdown
-  | TC ID | REQ ID | Module | Risk Level | Test Title | Pre-Condition | Test Steps | Expected Result | Priority | Test Data | Automatable | Auto Type | Tags |
+  | TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |
   ```
 - **4 bảng đối soát bắt buộc ở cuối tài liệu TC:** **Bảng Đối Soát Coverage** (mọi REQ có ≥1 TC), **Bảng Đối Soát Evidence** (+ vùng `@NeedsVerify`), **Bảng Đối soát loại kiểm thử (4 vòng)**, và **Bảng rà soát đặc tính chất lượng (ISO/IEC 25010:2023)**.

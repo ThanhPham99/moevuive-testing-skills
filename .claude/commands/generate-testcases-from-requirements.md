@@ -48,6 +48,6 @@ Trước khi sinh TC, Agent **BẮT BUỘC** nạp (`Read`) đúng các module t
 2. **Chạy thẳng theo batch (không dừng hỏi giữa chừng):** Công bố kế hoạch batch kèm độ hạt (`GỘP`/`TÁCH`) và mức rủi ro · độ sâu ra chat → ghi thẳng từng batch (`15–25 TC/batch`) vào `docs/testcases/<module>/test_cases_<module>.md` (tách `parts/part_NN_<slug>.md` nếu vượt `> 40 TC` ở `TÁCH` hoặc `> 50 TC` ở `GỘP`; tạo `task.md` nếu `> 30 TC`). Không in toàn bộ bảng TC ra chat.
 3. **Định dạng bảng 13 cột bất biến (tương thích `scripts/testcases-viewer`):**
    ```markdown
-   | TC ID | REQ ID | Module | Risk Level | Test Title | Pre-Condition | Test Steps | Expected Result | Priority | Test Data | Automatable | Auto Type | Tags |
+   | TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |
    ```
 4. **Cấu phần bắt buộc trong file Output:** Dòng `Mức rủi ro · độ sâu` (kèm điều kiện *"Nâng lên khi…"*), mục `Assumptions (ASM-XX)` (nếu có điểm mờ hoặc xung đột tài liệu ↔ ảnh), Bảng TC 13 cột, **Bảng Đối Soát Coverage**, **Bảng Đối Soát Evidence** (+ mục *"Vùng chưa có evidence"* gắn `@NeedsVerify`), **Bảng Đối soát loại kiểm thử (4 vòng)**, và **Bảng rà soát đặc tính chất lượng (ISO/IEC 25010:2023)**.

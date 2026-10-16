@@ -6,6 +6,7 @@ import {
   queryTestCases,
   type ParsedFile,
   type SortKey,
+  type TestCase,
 } from '@/lib/parser'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'

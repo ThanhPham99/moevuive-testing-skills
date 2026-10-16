@@ -15,7 +15,8 @@ Tự động đồng bộ kết quả thực thi Test Automation (Playwright, Te
 - **Jira Project Key**: Mã dự án trên Jira (VD: `PROJ` — đọc từ `.env` hoặc tham số `--project`).
 
 ## Context Pointers (Lazy-Load On Demand)
-- **Jira & Xray CLI Scripts Guide**: `.claude/skills/skills-jira-integration/SKILL.md`
+- **Jira & Xray Overview**: [`.claude/skills/skills-jira-integration/SKILL.md`](../../../.claude/skills/skills-jira-integration/SKILL.md)
+- **Jira / Xray `.env` & CLI Scripts Reference**: [`JIRA_ENV_AND_CLI_GUIDE.md`](../../../.claude/skills/skills-jira-integration/references/JIRA_ENV_AND_CLI_GUIDE.md)
 
 ## Execution Steps
 
@@ -25,7 +26,7 @@ Tự động đồng bộ kết quả thực thi Test Automation (Playwright, Te
    - `XRAY_PLATFORM` (`cloud` hoặc `server`)
    - **Xray Cloud**: `XRAY_CLIENT_ID`, `XRAY_CLIENT_SECRET`
    - **Xray Server / Data Center**: `JIRA_PAT` hoặc `JIRA_EMAIL` + `JIRA_API_TOKEN`
-3. Nếu thư mục `scripts/integrations/node_modules` chưa tồn tại, chạy `npm --prefix scripts/integrations install`.
+3. Bộ script `scripts/integrations/jira/` chạy trực tiếp trên Node.js 20+ (zero-dependency, không cần cài thêm package ngoài).
 4. Kiểm tra kết nối xác thực:
    ```bash
    node scripts/integrations/jira/xray_auth.js --verify

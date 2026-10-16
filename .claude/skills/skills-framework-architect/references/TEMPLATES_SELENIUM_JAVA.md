@@ -5,6 +5,26 @@
 
 ---
 
+## 0. Cấu trúc thư mục chuẩn — Selenium + Java & REST Assured (Maven + TestNG)
+
+```text
+project-root/
+├── pom.xml · testng.xml · .env.example · .gitignore · README.md
+├── src/main/java/com/project/
+│   ├── pages/                    # BasePage.java, LoginPage.java (Web) HOẶC api/ + models/ (REST Assured)
+│   ├── drivers/                  # DriverFactory.java (ThreadLocal<WebDriver>)
+│   ├── config/                   # ConfigReader.java / ApiConfig.java
+│   └── utils/                    # WaitHelper.java, ScreenshotUtil.java, TestDataGenerator.java
+├── src/test/java/com/project/
+│   ├── base/                     # BaseTest.java / BaseApiTest.java
+│   └── tests/                    # LoginTest.java / AuthApiTest.java
+├── reports/                      # allure-results/, allure-report/, allure-report-single/, html/, logs/, screenshots/, videos/
+├── test-data/                    # users.json, payloads/, schemas/
+└── .github/workflows/selenium.yml
+```
+
+---
+
 ## 1. Thread-Safe Driver Factory — `src/main/java/com/project/drivers/DriverFactory.java`
 
 ```java

@@ -1,0 +1,14 @@
+/generate-application-test-plan
+
+# CONTEXT
+- Hệ thống / Ứng dụng: [VD: CRM Portal / ERP System]
+- Mục tiêu đợt kiểm thử: [VD: Kiểm thử tổng thể trước Release v2.0 / Kiểm thử tích hợp liên module]
+- Danh sách modules trong phạm vi: [Để trống = agent tự đọc từ docs/requirements/README.md và _discovery/system_map.md]
+
+# RÀNG BUỘC & NGUỒN LỰC
+- Môi trường kiểm thử: [VD: Staging — dùng chung với đội Dev]
+- Thời gian / Số lượng Tester: [VD: 5 ngày, 2 Manual QA + 1 Automation QA]
+- Các luồng E2E trọng tâm cần ưu tiên: [VD: Lead -> Customer -> Project -> Invoice]
+
+# GHI CHÚ
+- Khác với `/generate-master-test-plan` (tài liệu quản lý cho PM/Khách duyệt), lệnh này thiết kế **Chiến lược Kiểm thử Kỹ thuật Cấp Hệ thống**: thứ tự test các module theo phụ thuộc dữ liệu, kịch bản tích hợp E2E và phân bổ nguồn lực Vòng 1–4

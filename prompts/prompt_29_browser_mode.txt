@@ -1,0 +1,16 @@
+/browser-mode
+
+# MODE
+[Xoá dòng không dùng:]
+- status — kiểm tra chế độ trình duyệt hiện tại (Headless hay Headed, Video ON/OFF)
+- headless — chuyển về chế độ mặc định Headless (1920x1080, tắt GPU, tiết kiệm RAM)
+- headed — bật giao diện trình duyệt trực tiếp (1600x750) khi cần quan sát UI hoặc đăng nhập qua CAPTCHA/OTP/MFA
+
+# VIDEO EVIDENCE
+[Xoá dòng không dùng:]
+- --video=off — mặc định cho phiên MCP tương tác
+- --video=on — quay video bằng chứng toàn bộ phiên chạy vào `reports/mcp-videos/`
+
+# GHI CHÚ
+- Agent sẽ tự động chạy `node scripts/browser-mode.mjs <mode> [--video=on|off]` để đồng bộ cấu hình sang `.mcp.json`, `.agents/plugins/claude-testing-skills/mcp_config.json` và `.claude/playwright-mcp-config.json`
+- Sau khi hoàn tất đăng nhập thủ công ở chế độ Headed, nhớ lưu `.auth/user_state.json` và chuyển lại về `headless`

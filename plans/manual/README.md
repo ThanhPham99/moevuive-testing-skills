@@ -24,7 +24,7 @@ Tận dụng tốc độ của AI để thực thi chi tiết, kết hợp với
    - Tích hợp **Scenarios Chuyên Sâu & Non-Functional** (Race Condition / Double Submit, Session & Network Resilience, Localization & UTF-8 / Emoji, Keyboard Accessibility A11y, HTTP Status Codes).
 6. **Template Mapping & AI Quality Gate (Chuẩn hóa Format & Metadata):**
    - Đóng gói toàn bộ Test Cases vào bảng Markdown chuẩn kèm Metadata Automation đầy đủ (`Automatable`, `Auto Type`, `Tags`).
-   - Kiểm định qua **AI Self-Quality Gate 6 Tiêu Chí** (Unique ID, 1-1 Step-Expected, Concrete Test Data, Field Coverage, Automation Metadata Ready, Requirement Coverage).
+   - Kiểm định qua **AI Self-Quality Gate 11 Tiêu Chí** (Unique ID, 1-1 Step-Expected, Concrete Test Data, Field Coverage, Automation Metadata Ready, Requirement Coverage, Evidence-verified, Observable Language...).
 
 *(Mỗi bước trên tương ứng với 1 thư mục con trong thư mục này, bao gồm `README.md` hướng dẫn chi tiết và `prompt.txt` chứa câu lệnh mẫu cho AI).*
 

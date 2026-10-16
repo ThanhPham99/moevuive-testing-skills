@@ -5,6 +5,23 @@
 
 ---
 
+## 0. Cấu trúc thư mục chuẩn — Python + Pytest (Playwright / Selenium / Appium)
+
+```text
+project-root/
+├── pyproject.toml · requirements.txt · conftest.py · .env.example · .gitignore · README.md
+├── src/
+│   ├── pages/ (hoặc screens/)    # base_page.py, login_page.py, dashboard_page.py
+│   ├── drivers/                  # driver_factory.py / appium_driver_factory.py (nếu Selenium/Appium)
+│   ├── utils/                    # config.py, test_data.py, helpers.py, screenshot_util.py
+│   └── tests/                    # conftest.py, test_login.py, test_dashboard.py
+├── reports/                      # allure-results/, allure-report/, allure-report-single/, html/, logs/, screenshots/, videos/
+├── test-data/                    # users.json
+└── .github/workflows/playwright.yml
+```
+
+---
+
 ## 1. Pytest Fixtures & Allure Screenshot Hook — `conftest.py`
 
 ```python

@@ -23,8 +23,8 @@ Xây dựng **Ma trận Truy vết Yêu cầu (Requirements Traceability Matrix 
 
 ## Execution Steps
 
-### Bước 1: Thu thập & Trích xuất Danh mục Định danh
-1. Đọc danh mục `docs/requirements/README.md`, `docs/testcases/README.md` và các file `requirements_<module>.md` / `test_cases_<module>.md` / Automation Scripts trong phạm vi để lập danh sách đầy đủ: `REQ ID` (kèm mức độ rủi ro/ưu tiên), `TC ID`, và đường dẫn hàm test tự động (`file:line`).
+### Bước 1: Chạy CLI Đối soát Tất định & Thu thập Danh mục Định danh
+1. Chạy `node scripts/validate-docs.mjs --check` và `node scripts/validate-docs.mjs --rtm [--module <slug>] [--out docs/traceability_matrix.md]` để trích xuất tất định (<50ms) toàn bộ `REQ ID`, `TC ID`, và các file script Automation (`*.spec.ts`, `*Test.java`, `test_*.py`) có gắn `TC ID`.
 2. Kiểm tra `docs/requirements/README.md` để phát hiện các module chưa có `requirements_<module>.md` (`⬛ Module chưa có tài liệu`). Nếu dự án chưa chạy `/discover-system`, ghi chú cảnh báo rõ ràng ở đầu báo cáo.
 
 ### Bước 2: Ánh xạ Đa Chiều & Tính Toán Chỉ số Độ phủ

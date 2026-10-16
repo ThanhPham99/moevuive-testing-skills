@@ -6,7 +6,7 @@ skills:
 
 # Workflow: Tạo Bug Report Từ Test FAIL (`/create-bug-report`)
 
-> **Context Pointer:** Nạp và thực thi theo [`.claude/skills/skills-bug-reporter/SKILL.md`](../skills/skills-bug-reporter/SKILL.md). Khi user yêu cầu đẩy bug lên Jira, nạp thêm [`skills-jira-integration`](../skills/skills-jira-integration/SKILL.md).
+> **Context Pointer:** Nạp và thực thi theo [`.claude/skills/skills-bug-reporter/SKILL.md`](../skills/skills-bug-reporter/SKILL.md) và [`BUG_REPORT_TEMPLATE_AND_JIRA.md`](../skills/skills-bug-reporter/references/BUG_REPORT_TEMPLATE_AND_JIRA.md). Khi user yêu cầu đẩy bug lên Jira, nạp thêm [`skills-jira-integration`](../skills/skills-jira-integration/SKILL.md).
 
 ## 1. Input Cần Thu Thập
 
@@ -34,4 +34,5 @@ skills:
 3. **⏸️ DỪNG LẠI** trình bày cho user xác nhận nội dung và hỏi xem có cần đẩy ticket lên Jira không.
 
 ### Bước 4: Đồng bộ lên Jira (Tùy chọn khi user xác nhận)
-- Sử dụng `skills-jira-integration` để tạo issue Jira kèm đính kèm evidence.
+- Chạy `node scripts/integrations/jira/jira_bug_creator.js --file docs/bugs/<module>/BUG_<module>_<ts>_<TC_ID>.md [--project <KEY>] --attach --update` để tạo issue Jira kèm đính kèm evidence và ghi ngược mã Jira Issue Key.
+

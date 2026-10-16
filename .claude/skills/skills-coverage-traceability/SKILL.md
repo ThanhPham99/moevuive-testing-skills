@@ -3,141 +3,83 @@ name: skills-coverage-traceability
 description: "Build Requirements Traceability Matrices (RTM) mapping Requirements (REQ ID) to Manual Test Cases (TC ID) and Automation Scripts, highlighting coverage gaps and orphan tests."
 ---
 
-# Coverage & Traceability Matrix
+# Coverage & Traceability Matrix (RTM)
 
-Purpose: Xây dựng Requirements Traceability Matrix (RTM) để trả lời 3 câu hỏi: requirement nào chưa có test? TC nào chưa automate? test nào đang mồ côi?
+## 1. Vai trò & Khi nào sử dụng
 
----
+Xây dựng **Ma Trận Truy Vết (Requirements Traceability Matrix — RTM)** nối 3 tầng `Requirements (REQ ID) ↔ Manual Test Cases (TC ID) ↔ Automation Scripts` để trả lời chính xác:
+1. Requirement nào chưa có Test Case (`🔴 Uncovered`)?
+2. Test Case nào chưa được tự động hóa (`🟡 Manual only`)?
+3. Test Case / Script nào đang mồ côi (`⚪ Orphan`)?
 
-## When to Use
-
-Sử dụng skill này khi:
-
-- User yêu cầu "ma trận truy vết", "RTM", "coverage report", "requirement nào chưa có test"
-- Trước release — cần chứng minh độ phủ test cho stakeholder
-- Sau khi sinh TC/automation — cần đối soát với requirements
-- Audit bộ test cũ: tìm test thừa (mồ côi) và requirement bị bỏ sót
+**Trigger:** `/generate-traceability-matrix`, `/update-automation-from-impact`, kiểm tra độ phủ trước release, hoặc đối soát sau khi sinh TC/Automation.
 
 ---
 
-## Input Sources
+## 2. Nguồn Dữ Liệu & Quy Tắc Ánh Xạ (Mapping Rules)
 
-| Nguồn | Định dạng chấp nhận | Cách nhận diện |
+| Tầng dữ liệu | Nguồn chuẩn | Quy tắc nhận diện & đối chiếu |
 |---|---|---|
-| **Requirements** | Requirement Index (`requirements_<module>.md`), Jira export, file phân tích từ `skills-requirements-analyzer` | ID dạng `REQ-<MODULE>-<NN>`, `STORY-<MODULE>-<NN>`, hoặc heading đánh số |
-| **Manual Test Cases** | Markdown, Excel/CSV | ID dạng `TC_xxx` |
-| **Automation Scripts** | `.spec.ts`, `*Test.java`, `.py` | Tên test method/block, annotation/tag chứa TC ID |
+| **1. Requirements** | `docs/requirements/<module>/requirements_<module>.md` (+ `stories/story_*.md`) | Mã `REQ-<MODULE>-<NN>` (hoặc `REQ-<SYS>-<MODULE>-<NN>`) |
+| **2. Manual Test Cases** | `docs/testcases/<module>/test_cases_<module>.md` | Cột `TC ID` (`<PREFIX>_<MODULE>_TC_<NNN>`) và cột `REQ ID` |
+| **3. Automation Scripts** | `*.spec.ts`, `*Test.java`, `test_*.py` | Nhãn `allure.label('testId', 'TC_xxx')` hoặc mã `TC_xxx` trong tên/annotation test |
 
-> Nếu thiếu 1 trong 3 nguồn → vẫn sinh RTM 2 chiều với nguồn có sẵn, ghi chú rõ phần thiếu. Nếu TC/test không có ID chuẩn → đề xuất bổ sung ID trước, hoặc map tạm theo tên/mô tả (đánh dấu ⚠️ map suy luận).
-
----
-
-## Mapping Rules
-
-1. **Map bằng ID là chuẩn nhất** — TC ghi `REQ-001` trong cột Requirement; automation ghi TC ID trong tag/annotation:
-   ```typescript
-   // Playwright — tag trong tên test
-   test('TC_LOGIN_01 - đăng nhập thành công', ...)
-   ```
-   ```java
-   // TestNG — description hoặc groups
-   @Test(description = "TC_LOGIN_01")
-   ```
-2. **Map bằng nội dung khi thiếu ID** — so khớp mô tả TC với tên test method; kết quả đánh dấu ⚠️ cần người xác nhận
-3. **1 requirement có thể map nhiều TC** và ngược lại — RTM là quan hệ n-n
-4. **KHÔNG bịa mapping** — không chắc thì để trống và liệt kê vào mục "cần xác nhận"
+- **Ưu tiên #1 — Chạy CLI đối soát tất định trước:**
+  ```bash
+  node scripts/validate-docs.mjs --check
+  node scripts/validate-docs.mjs --rtm --module <module>
+  ```
+  Lệnh `--rtm` tự động trích xuất toàn bộ `REQ ID` (kể cả REQ tách theo `stories/`), phân loại REQ trong/ngoài phạm vi, nối với `TC ID` trong `test_cases_<module>.md` và sinh bảng RTM 5 cột trong `<50ms`.
+- **Không bịa mapping:** Nếu phải ghép theo ngữ nghĩa (khi script thiếu `testId`), bắt buộc gắn cờ `⚠️ Suy luận` và tách vào bảng riêng chờ người dùng xác nhận.
 
 ---
 
-## Coverage Metrics
+## 3. Quy Trình 5 Bước & Mẫu Báo Cáo RTM Chuẩn (5 Cột)
 
-| Metric | Công thức | Ý nghĩa |
-|---|---|---|
-| **Requirement Coverage** | # REQ có ≥1 TC / tổng REQ | Requirement nào chưa được test |
-| **Automation Coverage** | # TC có ≥1 script / tổng TC | TC nào còn chạy tay |
-| **Orphan Tests** | # test không map về REQ nào | Test thừa hoặc requirement chưa được ghi nhận |
-
----
-
-## Workflow
-
-1. **Thu thập** — đọc 3 nguồn input; xác định format ID của từng nguồn
-2. **Trích xuất** — liệt kê toàn bộ REQ ID, TC ID, test method (kèm file path)
-3. **Map** — nối 3 tầng theo Mapping Rules; tách riêng mapping chắc chắn và mapping suy luận ⚠️
-4. **Tính metrics** — 3 chỉ số coverage
-5. **Phát hiện gap:**
-   - REQ không có TC → gap nghiêm trọng nhất, đề xuất sinh TC (dùng `skills-rbt-manual-testing`)
-   - TC không có automation → đề xuất thứ tự automate theo priority của TC
-   - Test mồ côi → đề xuất: bổ sung requirement, gắn ID, hoặc xóa nếu thừa
-6. **Xuất RTM** — file `traceability_matrix.md` (kèm CSV nếu user cần import Excel)
-
----
-
-## RTM Template
+1. **Chạy `node scripts/validate-docs.mjs --rtm [--module <slug>]`** để lấy khung ma trận `REQ ID ↔ TC ID` và các chỉ số cơ sở.
+2. **Quét thư mục Automation** (nếu có) để nối `TC ID ↔ Script file` và tính `Automation Coverage`.
+3. **Phân tích lỗ hổng (Gaps):**
+   - `🔴 REQ chưa có TC` → đề xuất chạy `/generate-testcases-from-requirements` hoặc `/generate-testcases-manual-rbt`.
+   - `🟡 TC chưa automate` → sắp xếp thứ tự ưu tiên theo `Priority` (`Critical` / `High` trước).
+   - `⚪ Orphan tests` → đề xuất gắn lại `REQ ID`/`TC ID` hoặc dọn dẹp nếu thừa.
+4. **Xuất file `traceability_matrix.md`** (tương thích trực tiếp với tab **RTM** của `scripts/execution-viewer/bundle.html`):
 
 ```markdown
-# Ma Trận Truy Vết (RTM) — <Tên dự án/module>
+# Ma Trận Truy Vết (RTM) — <Tên dự án / Module>
 
-## Tổng quan Coverage
-| Metric | Giá trị |
+## Tổng quan độ phủ
+| Chỉ số | Giá trị |
 |---|---|
-| Requirement Coverage | 18/20 (90%) |
-| Automation Coverage | 35/50 TC (70%) |
-| Orphan Tests | 3 |
+| Tổng REQ | 43 (Trong phạm vi: 39 · Ngoài phạm vi: 4) |
+| REQ đã có TC | 39/39 (100%) |
+| Automation Coverage | 35/50 TC (70%) · Orphan: 0 |
 
 ## Ma trận chi tiết
 | REQ ID | Mô tả ngắn | TC IDs | Automation | Trạng thái |
 |---|---|---|---|---|
-| REQ-001 | Đăng nhập email | TC_LOGIN_01, TC_LOGIN_02 | login.spec.ts (2/2) | ✅ Full |
-| REQ-002 | Quên mật khẩu | TC_PW_01 | — | 🟡 Manual only |
-| REQ-003 | Khóa account sau 5 lần sai | — | — | 🔴 NOT COVERED |
+| REQ-LOGIN-01 | Truy cập trang đăng nhập | CRM_LOGIN_TC_001, CRM_LOGIN_TC_039 | login.spec.ts | ✅ Full |
+| REQ-LOGIN-02 | Thành phần biểu mẫu đăng nhập | CRM_LOGIN_TC_002, CRM_LOGIN_TC_038 | — | 🟡 Manual only |
+| REQ-LOGIN-27 | Gửi liên kết đặt lại mật khẩu | — | — | ⚪ Out of scope |
 
-## 🔴 Requirements chưa được cover (ưu tiên xử lý)
-| REQ ID | Mô tả | Đề xuất |
-|---|---|---|
-| REQ-003 | ... | Sinh TC bằng /generate-testcases-from-requirements |
-
-## 🟡 TC chưa automate (đề xuất thứ tự theo priority)
-| TC ID | Priority | Ghi chú |
-|---|---|---|
-
-## ⚪ Orphan tests (không map về REQ nào)
-| Test | File | Đề xuất |
-|---|---|---|
-
-## ⚠️ Mapping suy luận — cần người xác nhận
-| REQ | TC/Test | Căn cứ suy luận |
-|---|---|---|
+## 🔴 Requirements chưa được cover · 🟡 TC chưa automate · ⚪ Orphan tests
 ```
 
 ---
 
-## Quality Checklist
+## 4. Đồng Bộ Delta Sang Automation (`/update-automation-from-impact` — `PLAN` / `APPLY`)
 
-- [ ] Mọi REQ/TC/test trong nguồn input đều xuất hiện trong RTM (không bỏ sót)
-- [ ] Mapping suy luận được tách riêng, không trộn với mapping có ID
-- [ ] Metrics tính đúng, khớp số dòng trong ma trận
-- [ ] Gap có đề xuất hành động kèm command/skill cụ thể
-- [ ] Không tự ý sửa file TC/test khi chưa được yêu cầu
-
-## Delta Impact Mapping (`TC_ID ↔ Automation Script` — `/update-automation-from-impact`)
-
-Khi đồng bộ mã nguồn Automation theo `Impact Report` hoặc `Delta TC List` (`PLAN` / `APPLY` modes):
-1. **3 Mức độ tin cậy khi ánh xạ `TC_ID → Script/POM`:**
-   - `✅ Chắc chắn`: Khớp nhãn `allure.label('testId', 'TC_xxx')` hoặc mã `TC_xxx` trong tên hàm/annotation test.
-   - `⚠️ Suy luận`: Khớp theo mô tả ngữ nghĩa (bắt buộc tách riêng trong kế hoạch để người dùng xác nhận trước khi sửa).
-   - `❓ Chưa automate`: Ghi nhận vào báo cáo, không chạm vào code; các TC `➕ Viết mới` điều hướng sang `/generate-automation-from-testcases`.
+Khi cập nhật mã nguồn Automation theo `Impact Report` hoặc `Delta TC List`:
+1. **Phân loại độ tin cậy ánh xạ `TC_ID → Script/POM`:** `✅ Chắc chắn` (khớp `testId`/tên test) · `⚠️ Suy luận` (khớp ngữ nghĩa — chờ duyệt) · `❓ Chưa automate` (chuyển sang `/generate-automation-from-testcases`).
 2. **Ma trận hành động Delta (`reports/automation_impact_plan.md`):**
    - Đổi `Expected Result` → chỉ sửa đúng dòng assertion tại `file:line`.
-   - Đổi `Steps` / thêm `UI Field mới` → cập nhật hàm trong Page Object + lấy locator thật từ DOM (mặc định **Headless Mode `1920x1080`**).
+   - Đổi `Steps` / thêm `UI Field` → cập nhật method trong Page Object + lấy locator thật từ DOM (mặc định **Headless Mode `1920x1080`**).
    - Đổi `Validation / Test Data` → cập nhật dữ liệu đầu vào (giữ chuẩn traceable `auto_<module>_<timestamp>`).
    - `🗑️ Archive TC` → **cấm tự ý xóa file script**; chỉ gắn `test.skip(...)` / `@Test(enabled = false)` kèm comment mã ticket.
-3. **Kiểm chứng 2 lớp (`Mode = APPLY`):** (a) Các bài test vừa sửa phải **PASS 2 lần liên tiếp**, và (b) toàn bộ bài test khác dùng chung Page Object vừa sửa phải chạy xanh không hồi quy.
+3. **Kiểm chứng 2 lớp (`Mode = APPLY`):** Các bài test vừa sửa phải **PASS $\ge 2$ lần liên tiếp**, và các bài test khác dùng chung Page Object phải chạy xanh không hồi quy.
 
 ---
 
-## Rules References
+## 5. Tham chiếu
 
-- `.claude/skills/skills-requirements-analyzer/SKILL.md` — Nguồn requirements & Impact Report chuẩn
-- `.claude/skills/skills-rbt-manual-testing/SKILL.md` — Sinh TC lấp gap & Delta TC List
-- `.claude/skills/skills-testcase-reviewer/SKILL.md` — Review chất lượng TC hiện có
+- [`skills-requirements-analyzer`](../skills-requirements-analyzer/SKILL.md) · [`skills-rbt-manual-testing`](../skills-rbt-manual-testing/SKILL.md) · [`skills-testcase-reviewer`](../skills-testcase-reviewer/SKILL.md)
+- CLI: `node scripts/validate-docs.mjs --rtm` · `node scripts/validate-docs.mjs --check`

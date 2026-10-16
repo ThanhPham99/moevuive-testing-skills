@@ -60,13 +60,16 @@ claude-testing-skills/
 │   ├── manual/              # Quy trình 6 bước sinh Manual Test Cases (AI-RBT)
 │   ├── automation/          # Quy trình 6 bước sinh Automation Scripts
 │   └── cross-module/        # Quy trình phân tích Cross-Module & Ma trận kết hợp
-├── prompts/                 # 32 prompt mẫu dùng nhanh (copy → paste → gửi)
+├── prompts/                 # 36 prompt mẫu dùng nhanh (copy → paste → gửi, phủ đủ 36 workflows)
 ├── scripts/
 │   ├── browser-mode.mjs     # Công tắc chuyển đổi Headless/Headed & Video cho cả Claude và Antigravity
-│   ├── sync-antigravity.mjs # Module đồng bộ Dual-Harness & kiểm chứng liên kết Context Pointers
-│   ├── verify-suite.mjs     # Bộ kiểm thử tự động 9 cổng (token budget, đồng bộ, liên kết & viewer parser)
+│   ├── sync-antigravity.mjs # Module đồng bộ Dual-Harness, Viewer Core Sync & kiểm chứng Context Pointers
+│   ├── validate-docs.mjs    # Artifact Integrity Gate (--check), RTM 3 tầng (--rtm) & Tổng hợp 7 tiêu chí Exit (--summary / npm run docs:summary)
+│   ├── viewer-core.mjs      # Nhân xử lý dữ liệu dùng chung (Parser, Natural Sort, Export Plan, XLSX/CSV)
+│   ├── verify-suite.mjs     # Bộ kiểm thử tự động 17 cổng (token budget, đồng bộ, docs gate, Jira/Xray & viewer parser)
+│   ├── integrations/jira/   # Bộ công cụ CLI tích hợp Jira & Xray (jira_fetcher, jira_bug_creator, xray_importer)
 │   ├── testcases-viewer/    # Công cụ web offline xem/lọc/xuất Excel (.xlsx/.csv) test cases
-│   ├── execution-viewer/    # Công cụ web offline xem kết quả chạy & so sánh các lần chạy
+│   ├── execution-viewer/    # Công cụ web offline xem kết quả chạy, retest, RTM & tổng hợp Release (test_summary_*.md)
 │   └── bugs-viewer/         # Công cụ web offline tra cứu danh mục bug & lịch sử retest
 ├── CLAUDE.md                # Rule chung cho AI Agent (Claude Code đọc tự động)
 ├── AGENTS.md                # Rule chung cho AI Agent (Antigravity đọc tự động — đồng bộ 100% với CLAUDE.md)
@@ -84,7 +87,8 @@ claude-testing-skills/
 │   │       ├── requirements_<module>.md       # INDEX — tên file bất biến
 │   │       ├── evidence/*.png                 # ảnh chụp khi khảo sát
 │   │       ├── stories/                       # khi tài liệu bị tách
-│   │       └── analysis/                      # phân tích ticket của module
+│   │       ├── analysis/                      # phân tích ticket của module
+│   │       └── impact/                        # báo cáo tác động delta (impact_<ticket>.md)
 │   ├── testcases/
 │   │   ├── README.md                          # DANH MỤC bộ TC: prefix TC ID, độ phủ REQ↔TC
 │   │   └── <module>/
@@ -95,9 +99,12 @@ claude-testing-skills/
 │   │   └── <module>/run_<timestamp>/
 │   │       ├── execution_report.md
 │   │       └── evidence/*.png
-│   └── bugs/                                  # Bug report sinh từ TC FAIL
-│       ├── README.md                          # DANH MỤC bug
-│       └── <module>/BUG_<module>_<ts>.md
+│   ├── bugs/                                  # Bug report sinh từ TC FAIL
+│   │   ├── README.md                          # DANH MỤC bug
+│   │   └── <module>/BUG_<module>_<ts>_<TC_ID>.md
+│   └── user-guides/                           # Hướng dẫn sử dụng cho người dùng cuối
+│       ├── README.md                          # DANH MỤC user guide
+│       └── <module>/user_guide_<module>.md
 ```
 
 > **Chuyển sang dự án mới:** chỉ cần xoá phần **ĐẦU RA** — `rm -rf docs .playwright-mcp task.md .claude/settings.local.json`. Agent tự tạo lại cấu trúc `docs/` ở lần chạy workflow đầu tiên. Chi tiết xem [CLAUDE.md](CLAUDE.md) mục 4.
@@ -111,7 +118,7 @@ claude-testing-skills/
 | `skills/`       | 20 kỹ năng chuyên biệt: requirements analyzer, automation engineer, manual testing, manual test executor, UI debug (web), **mobile debug (Appium — Native/Flutter/Hybrid)**, locator healer, test data generator, framework architect, jira integration, bug reporter, test report analyzer, **test summary reporter**, **user guide writer**, testcase reviewer, automation code reviewer, coverage traceability, api mocking...                                                                                                                              |
 | `settings.json` | Cấu hình quyền hạn: cho phép/cấm các hành động cụ thể (đọc file, chạy test, push code...). Riêng `settings.local.json` là cấu hình **cục bộ từng máy** — đã gitignore, không commit                                                                                                                                                                                                                                                                 |
 
-> **📌 Lưu ý về cấu trúc:** Trong Claude Code, **workflows** được gọi là **commands** và đặt trong `.claude/commands/`. Tên file dùng dấu gạch dưới (`_`). Ví dụ: `generate-automation-from-testcases.md`.
+> **📌 Lưu ý về cấu trúc:** Trong Claude Code, **workflows** được gọi là **commands** và đặt trong `.claude/commands/`. Tên file dùng dấu gạch ngang (`-`). Ví dụ: `generate-automation-from-testcases.md`.
 
 ---
 
@@ -127,7 +134,7 @@ Dành cho các tác vụ phức tạp, cần thực hiện **tuần tự trong c
 
 **Cách dùng:** Mở `QUICK_START.md` → Làm theo từng bước → Gửi prompt mỗi bước vào Claude Code.
 
-### `prompts/` — Prompt Mẫu Dùng Nhanh
+### `prompts/` — 36 Prompt Mẫu Dùng Nhanh
 
 Dành cho tác vụ **đơn lẻ**, chỉ cần copy → thay `[...]` bằng dữ liệu thực → paste → gửi.
 
@@ -138,7 +145,8 @@ Dành cho tác vụ **đơn lẻ**, chỉ cần copy → thay `[...]` bằng d�
 | 02  | `prompt_02_generate_test_cases.txt`             | **[Mới]** Sinh manual TCs RBT chuẩn 15 field types & Quality Gate       |
 | 03  | `prompt_03_create_framework_playwright.txt`     | Dựng framework Playwright TS                                            |
 | 03  | `prompt_03_create_framework_selenium.txt`       | Dựng framework Selenium Java                                            |
-| 04  | `prompt_04_generate_script_playwright.txt`      | Viết test script Playwright TS                                          |
+| 03  | `prompt_03_create_framework_appium.txt`         | Dựng framework Appium Java (Mobile)                                     |
+| 04  | `prompt_04_generate_script_playwright.txt`      | Viết test script Playwright TS (từ TC hoặc UI Flow)                     |
 | 04  | `prompt_04_generate_script_selenium.txt`        | Viết test script Selenium Java                                          |
 | 05  | `prompt_05_convert_manual_to_automation.txt`    | Chuyển manual TC sang automation                                        |
 | 06  | `prompt_06_review_automation_code.txt`          | **[Mới]** Review chất lượng automation code theo Definition of Done     |
@@ -146,16 +154,16 @@ Dành cho tác vụ **đơn lẻ**, chỉ cần copy → thay `[...]` bằng d�
 | 08  | `prompt_08_analyze_flaky_tests.txt`             | Phân tích test không ổn định                                            |
 | 09  | `prompt_09_generate_api_tests.txt`              | **[Mới]** Viết test API 12 status codes & OWASP Security                |
 | 10  | `prompt_10_create_bug_report.txt`               | **[Mới]** Sinh bug report chuẩn từ test FAIL, tùy chọn đẩy Jira         |
-| 11  | `prompt_11_analyze_test_report.txt`             | **[Mới]** Phân tích test report, gom nhóm failure theo root cause       |
+| 11  | `prompt_11_analyze_test_report.txt`             | **[Mới]** Phân tích test report, gom nhóm failure & đồng bộ Jira Xray   |
 | 12  | `prompt_12_review_testcases.txt`                | **[Mới]** Review chất lượng manual TCs theo rubric 6 tiêu chí           |
 | 13  | `prompt_13_generate_traceability_matrix.txt`    | **[Mới]** Sinh ma trận truy vết RTM 3 tầng                              |
 | 14  | `prompt_14_generate_api_mocks.txt`              | **[Mới]** Sinh API mocks + tests cho edge cases                         |
 | 15  | `prompt_15_generate_checklist.txt`              | **[Mới]** Sinh checklist tick tay (smoke / regression / release)        |
 | 16  | `prompt_16_execute_test_cases.txt`              | **[Mới]** Thực thi manual TC trên browser thật, xuất execution report   |
 | 17  | `prompt_17_run_and_fix_tests.txt`               | **[Mới]** Chạy suite có sẵn, phân loại failure, tự sửa nhóm sửa được    |
-| 18  | `prompt_18_heal_locators.txt`                   | **[Mới]** Rà & sửa locator trong Page Object sau khi UI đổi             |
+| 18  | `prompt_18_heal_locators.txt`                   | **[Mới]** Trích xuất & hàn gắn locator trong Page Object sau khi UI đổi |
 | 19  | `prompt_19_update_automation_from_impact.txt`   | **[Mới]** Cập nhật script đã có theo Impact Report (delta mode)         |
-| 20  | `prompt_20_analyze_requirement_document.txt`    | **[Mới]** Phân tích ticket/tài liệu → tài liệu phân tích, KHÔNG sinh TC |
+| 20  | `prompt_20_analyze_requirement_document.txt`    | **[Mới]** Kéo/phân tích ticket Jira & tài liệu → phân tích REQ/AMB/RISK |
 | 21  | `prompt_21_update_requirements_from_ticket.txt` | **[Mới]** Cập nhật requirements từ ticket (delta mode) + Impact Report  |
 | 22  | `prompt_22_generate_testcases_quick.txt`        | **[Mới]** Sinh manual TCs QUICK mode — 1 lượt, không qua 6 bước RBT     |
 | 23  | `prompt_23_retest_fixed_bugs.txt`               | **[Mới]** Retest bug đã fix + regression quanh vùng fix                 |
@@ -163,7 +171,11 @@ Dành cho tác vụ **đơn lẻ**, chỉ cần copy → thay `[...]` bằng d�
 | 25  | `prompt_25_generate_master_test_plan.txt`       | **[Mới]** Master Test Plan — phạm vi, tiêu chí vào/ra, lịch, rủi ro     |
 | 26  | `prompt_26_generate_automation_mobile_flow.txt` | **[Mới]** Sinh automation Appium từ flow chạy thật — Native/Flutter/Hybrid |
 | 27  | `prompt_27_update_testcases_from_impact.txt`    | **[Mới]** Cập nhật TC đã có theo Impact Report (delta mode), giữ TC ID  |
-| 28  | `prompt_28_generate_user_guide.txt`             | **[Mới]** Hướng dẫn sử dụng cho người dùng cuối — tổ chức theo việc cần làm  |
+| 28  | `prompt_28_generate_user_guide.txt`             | **[Mới]** Hướng dẫn sử dụng cho người dùng cuối — tổ chức theo việc cần làm |
+| 29  | `prompt_29_browser_mode.txt`                    | **[Mới]** Chuyển đổi chế độ trình duyệt Headless (`1920x1080`) ↔ Headed (`1600x750`) |
+| 30  | `prompt_30_generate_application_test_plan.txt`  | **[Mới]** Chiến lược kiểm thử kỹ thuật cấp ứng dụng đa module & E2E     |
+| 31  | `prompt_31_generate_cross_module_test_plan.txt` | **[Mới]** Phân tích tính năng xuyên module & sinh ma trận kết hợp       |
+| 32  | `prompt_32_generate_combinatorial_test_data.txt`| **[Mới]** Sinh bộ dữ liệu kiểm thử tổ hợp đa chiều (GENERATE / PIPELINE)|
 
 > Danh mục đầy đủ chia theo 7 nhóm tra cứu: [`prompts/README.md`](prompts/README.md)
 

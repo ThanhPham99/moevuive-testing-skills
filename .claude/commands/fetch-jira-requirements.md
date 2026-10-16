@@ -6,7 +6,7 @@ skills:
 
 # Workflow: Fetch Jira Requirements (`/fetch-jira-requirements`)
 
-> **Context Pointer:** Nạp và thực thi theo [`.claude/skills/skills-jira-integration/SKILL.md`](../skills/skills-jira-integration/SKILL.md).
+> **Context Pointers:** Nạp và thực thi theo [`.claude/skills/skills-jira-integration/SKILL.md`](../skills/skills-jira-integration/SKILL.md) và [`JIRA_ENV_AND_CLI_GUIDE.md`](../skills/skills-jira-integration/references/JIRA_ENV_AND_CLI_GUIDE.md).
 
 ## 1. Input Cần Thu Thập
 
@@ -19,8 +19,8 @@ skills:
 ## 2. Các Bước Thực Hiện
 
 1. **Kiểm tra điều kiện tiên quyết:**
-   - Xác nhận file `.env` có đủ thông tin kết nối Jira (`JIRA_BASE_URL`, `JIRA_EMAIL`/`JIRA_API_TOKEN` hoặc `JIRA_PAT`).
-   - Kiểm tra `scripts/integrations/node_modules/`; nếu chưa có thì chạy `npm install` tại `scripts/integrations`.
+   - Xác nhận file `.env` (khởi tạo từ `.env.example`) có đủ thông tin kết nối Jira (`JIRA_BASE_URL`, `JIRA_EMAIL`/`JIRA_API_TOKEN` hoặc `JIRA_PAT`).
+   - Bộ script `scripts/integrations/jira/` sử dụng Node.js 20+ built-in `fetch` (zero-dependency, chạy trực tiếp không cần `npm install`).
 2. **Thực thi `jira_fetcher.js`:**
    ```bash
    node scripts/integrations/jira/jira_fetcher.js --issue <ISSUE_KEY> --format md --output ./requirements/jira

@@ -86,12 +86,22 @@ _Avoid_: Updated test sheet
 The bidirectional mapping across Requirements (`REQ ID`), Manual Test Cases (`TC ID`), Automated Test Scripts, Execution Reports, and Bug Reports.
 _Avoid_: Coverage table
 
+**Test Summary Report**:
+The milestone-level release readiness artifact that aggregates execution runs across modules, open bug severities, **Traceability Matrix** coverage, and seven ISO/IEC/IEEE 29119-3 exit criteria into an evidence-backed `GO`, `CONDITIONAL_GO`, or `NO_GO` recommendation.
+_Avoid_: Release notes, sprint recap
+
 **Offline Report Viewer**:
-A self-contained HTML application that parses Markdown QA tables (**Test Cases**, **Execution Reports**, or **Bug Reports**) locally in the browser for interactive filtering and Office Open XML (`.xlsx`) export without a backend server.
+A self-contained HTML application that parses Markdown QA tables (**Test Cases**, **Execution Reports**, **Test Summary Reports**, or **Bug Reports**) locally in the browser for interactive filtering and Office Open XML (`.xlsx`) export without a backend server.
 _Avoid_: Dashboard app, reporting portal
 
 **Export Plan**:
 The normalized tabular workbook specification—defining sheet names, column headers, column widths, status-styled columns, and plain-text row cells—produced by an **Offline Report Viewer** model prior to CSV or Office Open XML (`.xlsx`) serialization.
 _Avoid_: Sheet config, raw table dump
 
+**Viewer Core Synchronization**:
+The deterministic projection of the shared **Offline Report Viewer** parsing, sorting, querying, and **Export Plan** serialization engine into every standalone HTML viewer bundle without runtime dependencies or logic drift.
+_Avoid_: Inline copy-paste, manual viewer build
 
+**Artifact Integrity Gate**:
+The automated verification and traceability audit that validates documentation table schemas, **Module Catalog** ID range continuity, bidirectional `REQ ID` / `TC ID` / `BUG ID` references, and evidence link existence across a project's QA documentation tree.
+_Avoid_: Docs linter, markdown checker

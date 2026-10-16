@@ -110,23 +110,30 @@ Mặc định, bộ kit chạy trình duyệt ở chế độ **Headless Mode (`
 
 ---
 
-### 2.5. Kiểm tra sức khỏe bộ Kit & Đồng bộ Dual-Harness
+### 2.5. Kiểm tra sức khỏe bộ Kit, Artifact Integrity Gate (`docs/`) & Đồng bộ Dual-Harness
 
-Bất kỳ lúc nào bạn chỉnh sửa nội dung trong `.claude/` hoặc `CLAUDE.md`, hãy chạy 2 lệnh sau để đồng bộ sang `.agents/` và kiểm tra toàn vẹn hệ thống:
+Bất kỳ lúc nào bạn chỉnh sửa nội dung trong `.claude/`, `CLAUDE.md` hoặc cập nhật tài liệu trong `docs/`, hãy chạy các lệnh sau để đồng bộ sang `.agents/`, kiểm tra toàn vẹn `docs/` và trích xuất ma trận truy vết RTM:
 
 ```bash
-# 1. Đồng bộ từ .claude/ & CLAUDE.md sang .agents/ & AGENTS.md
+# 1. Đồng bộ từ .claude/, CLAUDE.md & viewer-core.mjs sang .agents/, AGENTS.md & standalone HTML viewers
 npm run sync
 
-# 2. Chạy bộ kiểm thử 9 cổng (kiểm tra đồng bộ, token budget, 346+ liên kết & parser)
+# 2. Chạy toàn bộ cổng kiểm định (Dual-Harness Sync + Artifact Integrity Gate docs/ + 16+ bài test kiến trúc)
 npm run check
+
+# 3. Chỉ kiểm tra riêng tính toàn vẹn của thư mục docs/ (liên kết, bảng 13/5/8 cột, tham chiếu REQ <-> TC <-> Bug)
+npm run docs:check
+
+# 4. Trích xuất tức thời Ma trận Truy vết (RTM) & độ phủ (<50ms, hỗ trợ --module <slug> và --json)
+npm run docs:rtm -- --module login
 ```
 
-Kết quả mong đợi khi mọi thứ chuẩn 100%:
+Kết quả mong đợi khi chạy `npm run check`:
 ```text
 Antigravity customizations are 100% in sync (36 slash commands + 20 core skills + AGENTS.md + Playwright MCP).
-ℹ tests 9
-ℹ pass 9
+Artifact Integrity Gate PASSED: 56 docs, 226 REQs, 50 TCs, 6 Bug Reports across [customers, login, projects].
+ℹ tests 16
+ℹ pass 16
 ℹ fail 0
 ```
 
@@ -281,9 +288,9 @@ Chế độ độ hạt: GỘP (mặc định)
 3. Tự kiểm định qua **11 tiêu chí AI Self-Quality Gate** và ghi ra file `docs/testcases/login/test_cases_login.md` theo đúng **chuẩn bảng 13 cột**:
 
 ```markdown
-| TC ID | REQ ID | Module | Risk Level | Test Title | Pre-Condition | Test Steps | Expected Result | Priority | Test Data | Automatable | Auto Type | Tags |
+| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| TC_LOGIN_001 | REQ-LOGIN-01 | Login | Cao | Kiểm tra bố cục và trạng thái mặc định màn hình Đăng nhập | Người dùng chưa đăng nhập | 1. Mở trang `https://www.saucedemo.com`<br>2. Quan sát các thành phần trên form đăng nhập | 1. Hiển thị tiêu đề `Swag Labs`<br>2. Ô `Username` và `Password` trống, nút `Login` hiển thị rõ và cho phép bấm | High | URL: `https://www.saucedemo.com` | Yes | UI | `@Smoke, @UI` |
+| TC_LOGIN_001 | REQ-LOGIN-01 | Login | Cao | Kiểm tra bố cục và trạng thái mặc định màn hình Đăng nhập | Người dùng chưa đăng nhập | 1. Mở trang `https://www.saucedemo.com`<br>2. Quan sát các thành phần trên form đăng nhập | URL: `https://www.saucedemo.com` | 1. Hiển thị tiêu đề `Swag Labs`<br>2. Ô `Username` và `Password` trống, nút `Login` hiển thị rõ và cho phép bấm | High | Yes | UI | `@Smoke, @UI` |
 ```
 
 ---
@@ -311,24 +318,24 @@ Môi trường: https://www.saucedemo.com
 3. Xuất báo cáo `docs/executions/login/run_<timestamp>/execution_report.md`.
 
 #### Bước 2.2 — Tạo Bug Report chuẩn từ Test Case bị FAIL (`/create-bug-report`)
-Giả sử `TC_LOGIN_005` bị `FAIL`, bạn gõ:
+Giả sử `TC004` (`TC_LOGIN_004`) bị `FAIL`, bạn gõ:
 
 ```text
 /create-bug-report
-Từ kết quả chạy tại: docs/executions/login/run_20261014_1730/execution_report.md
-Tạo bug report cho TC_LOGIN_005.
+Từ kết quả chạy tại: docs/executions/login/run_1787226513/execution_report.md
+Tạo bug report cho TC004.
 ```
 
 **AI sẽ thực hiện:**
-1. Tạo file `docs/bugs/login/BUG_login_20261014_TC_LOGIN_005.md` có đầy đủ: Mức độ nghiêm trọng (`Severity` / `Priority`), Các bước tái hiện (`Steps to Reproduce`), Kết quả thực tế vs Kết quả mong đợi, link trực tiếp tới ảnh chụp lỗi trong `docs/executions/`, và bảng `## Lịch sử retest` ở cuối file.
+1. Tạo file `docs/bugs/login/BUG_login_1787226513_TC004.md` có đầy đủ: Mức độ nghiêm trọng (`Severity` / `Priority`), Các bước tái hiện (`Steps to Reproduce`), Kết quả thực tế vs Kết quả mong đợi, link trực tiếp tới ảnh chụp lỗi trong `docs/executions/`, và bảng `## Lịch sử retest` ở cuối file.
 2. Cập nhật danh mục tổng hợp tại `docs/bugs/README.md`.
 
 #### Bước 2.3 — Kiểm tra lại sau khi Dev sửa lỗi (`/retest-fixed-bugs`)
-Khi Developer báo đã fix xong `BUG_login_20261014_TC_LOGIN_005`, bạn gõ:
+Khi Developer báo đã fix xong `BUG_login_1787226513_TC004`, bạn gõ:
 
 ```text
 /retest-fixed-bugs
-File bug: docs/bugs/login/BUG_login_20261014_TC_LOGIN_005.md
+File bug: docs/bugs/login/BUG_login_1787226513_TC004.md
 Chế độ: FULL (chạy lại kịch bản tái hiện bug + chạy regression các TC liên cùng nhóm REQ-LOGIN-02)
 ```
 
@@ -358,7 +365,7 @@ Nội dung thay đổi:
    - **SỬA** trực tiếp nội dung `REQ-LOGIN-03` (giữ nguyên mã `REQ-LOGIN-03`, tăng version).
    - **THÊM** mã mới tiếp nối ở cuối dải số (`REQ-LOGIN-06` cho link Quên mật khẩu).
    - **BỎ** bằng cách chuyển trạng thái `REQ-LOGIN-04` sang `🔴 Deprecated` (không xoá dòng để giữ lịch sử).
-2. Ghi nhận vào bảng **Nhật ký thay đổi** và xuất báo cáo tác động `docs/requirements/login/analysis/impact_CR-108.md`.
+2. Ghi nhận vào bảng **Nhật ký thay đổi** và xuất báo cáo tác động `docs/requirements/login/impact/impact_CR-108.md`.
 
 #### Bước 3.2 — Đồng bộ sang bộ Manual Test Cases (`/update-testcases-from-impact`)
 Tiếp tục gõ:
@@ -366,7 +373,7 @@ Tiếp tục gõ:
 ```text
 /update-testcases-from-impact
 Module: login
-Impact Report: docs/requirements/login/analysis/impact_CR-108.md
+Impact Report: docs/requirements/login/impact/impact_CR-108.md
 Chế độ: PLAN
 ```
 
@@ -491,4 +498,4 @@ Bộ kit đi kèm **3 ứng dụng Web Viewer độc lập** được đóng gó
 - **Quy trình 8 chặng Manual Testing chi tiết:** [`AI_FULL_FLOW_MANUAL.md`](AI_FULL_FLOW_MANUAL.md)
 - **Quy trình 8 chặng Automation Testing chi tiết:** [`AI_FULL_FLOW_AUTOMATION.md`](AI_FULL_FLOW_AUTOMATION.md)
 - **Từ điển thuật ngữ chuẩn của hệ thống (Domain Glossary):** [`GLOSSARY.md`](GLOSSARY.md)
-- **32 Prompt mẫu điền sẵn dùng ngay:** [`prompts/README.md`](prompts/README.md)
+- **36 Prompt mẫu điền sẵn dùng ngay:** [`prompts/README.md`](prompts/README.md)

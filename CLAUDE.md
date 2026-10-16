@@ -45,7 +45,7 @@
 - **Bảo mật & Vệ sinh Evidence:** Lưu mật khẩu/token/secret thật tại `.env`. Ảnh chụp đúng phạm vi đối tượng cần chứng minh; xác nhận hiển thị bằng `browser_snapshot` + `browser_evaluate` (chỉ đọc `.png` khi kiểm tra lỗi bố cục CSS). Bug report tại `docs/bugs/<module>/` link trực tiếp tới ảnh trong `docs/executions/`.
 - **Đa hệ thống & Đa đặc vụ:** Hệ thống thứ hai trong cùng repo đặt dưới namespace `docs/<nhánh>/_<hệ-thống>/` (mã `REQ-<HỆ_THỐNG>-<MODULE>-<nn>`). Dự án $\ge 3$ modules dùng **Orchestrator Agent** chạy `/discover-system` rồi phân bổ từng module cho các **Worker Subagents** độc lập.
 - **Dọn dự án mới:** `rm -rf docs .playwright-mcp task.md .claude/settings.local.json`.
-- **Web Viewers offline:** `scripts/testcases-viewer/bundle.html` · `scripts/execution-viewer/bundle.html` · `scripts/bugs-viewer/bundle.html`.
+- **Web Viewers & Artifact Gate:** `scripts/testcases-viewer/bundle.html` · `scripts/execution-viewer/bundle.html` · `scripts/bugs-viewer/bundle.html` · `node scripts/validate-docs.mjs <--check|--rtm>`.
 
 ---
 

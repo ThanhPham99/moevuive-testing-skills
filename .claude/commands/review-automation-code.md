@@ -16,9 +16,10 @@ skills:
   - `FIX`: Xuất báo cáo `REVIEW`, sau khi người dùng duyệt danh sách thì trực tiếp sửa code và chạy lại kiểm chứng (phải PASS 2 lần liên tiếp).
 
 ## Context Pointers (Lazy-Load On Demand)
-- **6-Group Scoring Rubric (12 pts), Blockers & Report Template**: `.claude/skills/skills-automation-code-reviewer/SKILL.md`
-- **Resilient Locator Replacement (chỉ đọc khi `Mode = FIX` cần thay locator xấu)**: `.claude/skills/skills-smart-locator-agent/SKILL.md`
-- **Browser DOM Verification (Headless `1920x1080` default)**: `.claude/skills/skills-ui-debug-agent/SKILL.md`
+- **6-Group Scoring Rubric (12 pts) & Blockers**: [`.claude/skills/skills-automation-code-reviewer/SKILL.md`](../skills/skills-automation-code-reviewer/SKILL.md)
+- **Report Template & Safe Fix Flow (`Mode = FIX`)**: [`REVIEW_REPORT_TEMPLATE_AND_FIX_FLOW.md`](../skills/skills-automation-code-reviewer/references/REVIEW_REPORT_TEMPLATE_AND_FIX_FLOW.md)
+- **Resilient Locator Replacement (chỉ đọc khi `Mode = FIX` cần thay locator xấu)**: [`.claude/skills/skills-smart-locator-agent/SKILL.md`](../skills/skills-smart-locator-agent/SKILL.md)
+- **Browser DOM Verification (Headless `1920x1080` default)**: [`.claude/skills/skills-ui-debug-agent/SKILL.md`](../skills/skills-ui-debug-agent/SKILL.md)
 
 ## Nguyên tắc Thực thi Bắt buộc
 1. **Mọi lỗi đều phải chỉ rõ `file:line` và đoạn code nguyên văn**: Không nhận xét cảm tính chung chung; mỗi vấn đề phải đi kèm đoạn code thay thế cụ thể (`Code cũ -> Code mới`).

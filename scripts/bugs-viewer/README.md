@@ -102,6 +102,6 @@ Giống `execution-viewer`: trình duyệt không tự đọc được ảnh tr�
 
 Cùng lý do với `execution-viewer` — xem [`../execution-viewer/README.md`](../execution-viewer/README.md) mục cuối. File `.xlsx` dựng thủ công bằng zip + Office Open XML (không dùng SheetJS để giữ `bundle.html` nhẹ, mở offline được).
 
-Muốn đổi giao diện thì sửa thẳng trong `bundle.html` — CSS ở `<style>` đầu file, logic ở `<script>` cuối file, chia sẵn khối: `PARSER (generic)` · `PARSER (đặc thù bug)` · `STATE` · `DERIVED` · `RENDER` · `EXPORT` · `EVENTS`.
+Muốn đổi giao diện thì sửa thẳng trong `bundle.html` — CSS ở `<style>` đầu file, logic UI ở `<script>` cuối file (`STATE` · `DERIVED` · `RENDER` · `EXPORT` · `EVENTS`). Riêng khối nhân xử lý dữ liệu nằm giữa cặp marker `/* __VIEWER_CORE_START__ */ ... /* __VIEWER_CORE_END__ */` được đồng bộ tự động từ [`../viewer-core.mjs`](../viewer-core.mjs) khi chạy `npm run sync` (`node scripts/sync-antigravity.mjs`).
 
 Màu thương hiệu `#4DBD44` (xanh) khai báo ở biến CSS `--brand`, đồng bộ với 2 viewer kia; riêng logo dùng đỏ (`--crit`) để phân biệt nhanh đây là trang bug, không phải trang kết quả test.

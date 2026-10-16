@@ -5,6 +5,28 @@
 
 ---
 
+## 0. Cấu trúc thư mục chuẩn — Playwright + Java (Maven + TestNG)
+
+```text
+project-root/
+├── pom.xml                       # Maven config — playwright-java, testng, allure-testng
+├── testng.xml                    # TestNG suite config
+├── .env.example · .gitignore · README.md
+├── src/main/java/com/project/
+│   ├── pages/                    # BasePage.java, LoginPage.java, DashboardPage.java
+│   ├── factory/                  # PlaywrightFactory.java (ThreadLocal), BrowserOptions.java
+│   ├── config/                   # ConfigReader.java
+│   └── utils/                    # ScreenshotUtil.java, TestDataGenerator.java
+├── src/test/java/com/project/
+│   ├── base/                     # BaseTest.java (@BeforeMethod/@AfterMethod)
+│   └── tests/                    # LoginTest.java, DashboardTest.java
+├── reports/                      # allure-results/, allure-report/, allure-report-single/, html/, logs/, screenshots/, videos/
+├── test-data/                    # users.json
+└── .github/workflows/playwright-java.yml
+```
+
+---
+
 ## 1. Thread-Safe Browser Factory — `src/main/java/com/project/factory/PlaywrightFactory.java`
 
 ```java

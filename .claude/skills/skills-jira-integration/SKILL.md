@@ -5,171 +5,75 @@ description: "Fetch Jira issues/epics/JQL as requirement documents and import Pl
 
 # Jira & Xray Integration Skill
 
-## Mô tả
+## 1. Mô tả & Khi nào sử dụng
 
-Skill này cung cấp khả năng tích hợp giữa Claude Testing Skills với hệ thống Jira và Xray để:
+Tích hợp hai chiều giữa Claude Testing Skills với **Jira** và **Xray Test Management** (Cloud hoặc Server/Data Center):
+1. **Lấy Requirements / User Stories** từ Jira (theo Issue Key, Project, Epic, hoặc JQL) → xuất thành file Markdown/JSON chuẩn cho `/analyze-requirement-document`.
+2. **Đẩy Bug Report (`BUG_*.md`) lên Jira** kèm đính kèm bằng chứng (`screenshot` / `video` / `log`) và tự động ghi ngược mã Jira Issue Key.
+3. **Xác thực Xray API** và **Đẩy kết quả chạy test** (`Playwright JSON`, `JUnit XML`, `Xray JSON`) lên Xray Test Execution.
 
-1. **Lấy Requirements/User Stories** từ Jira → chuyển thành tài liệu yêu cầu chuẩn
-2. **Xác thực Xray** (Cloud hoặc Server/Data Center)
-3. **Đẩy kết quả test** (Playwright, JUnit, Allure) lên Xray Test Management
-
----
-
-## Khi nào sử dụng
-
-Agent sử dụng skill này khi user yêu cầu:
-
-- Lấy requirement / user story từ Jira
-- Kết nối / test connection đến Jira API
-- Đẩy kết quả test lên Xray
-- Import test results lên Jira
-- Xác thực Xray token
-- Tích hợp CI/CD với Jira
-
-Trigger keywords:
-- "fetch jira", "lấy requirement từ jira", "get jira ticket"
-- "import xray", "đẩy kết quả lên xray", "push test results"
-- "test jira connection", "kiểm tra kết nối jira"
+**Trigger:** `/fetch-jira-requirements`, `/import-test-results-xray`, `/create-bug-report` (Bước 4), "lấy requirement từ Jira", "đẩy bug lên Jira", "import kết quả test lên Xray".
 
 ---
 
-## Cấu trúc Scripts
+## 2. Cấu trúc Scripts & Cài đặt (Zero-Dependency Node.js 20+)
 
+```text
+scripts/integrations/jira/
+├── jira_fetcher.js      # Lấy Requirement/User Story từ Jira (tự động chuyển ADF → Markdown)
+├── jira_bug_creator.js  # Đẩy file BUG_*.md lên Jira (ADF/Markdown) + upload evidence + ghi ngược Jira Key
+├── xray_auth.js         # Xác thực và lấy Token Xray (Cloud & Server/DC)
+├── xray_importer.js     # Import kết quả test (Playwright JSON / JUnit XML / Xray JSON) lên Xray
+└── utils.js             # Hàm utility, .env loader, ADF <-> Markdown converter & phân trang (pagination)
 ```
-scripts/integrations/
-├── jira/
-│   ├── jira_fetcher.js      # Lấy Requirement/User Story từ Jira
-│   ├── xray_auth.js         # Xác thực và lấy Token Xray
-│   ├── xray_importer.js     # Import kết quả test lên Xray
-│   └── utils.js             # Hàm utility dùng chung
-└── package.json             # Dependencies (axios, dotenv)
-```
-
----
-
-## Điều kiện tiên quyết (Prerequisites)
-
-### 1. Cài đặt dependencies
 
 ```bash
-cd scripts/integrations
-npm install
+cp .env.example .env   # Tại thư mục gốc repo (chạy trực tiếp bằng Node.js 20+, không cần npm install)
 ```
 
-### 2. Cấu hình .env
-
-Copy `.env.example` thành `.env` ở thư mục gốc project:
-
-```bash
-cp .env.example .env
-```
-
-Điền các thông tin bắt buộc:
+### Biến môi trường bắt buộc trong `.env`
 
 | Biến | Mô tả | Bắt buộc |
-|------|--------|----------|
+|---|---|---|
 | `JIRA_BASE_URL` | URL Jira instance (VD: `https://domain.atlassian.net`) | ✅ |
-| `JIRA_EMAIL` | Email tài khoản Jira (Cloud) | ✅ (Cloud) |
-| `JIRA_API_TOKEN` | API Token (Cloud) | ✅ (Cloud) |
-| `JIRA_PAT` | Personal Access Token (Server/DC) | ✅ (Server) |
-| `JIRA_PROJECT_KEY` | Project key mặc định | Khuyến nghị |
-| `XRAY_PLATFORM` | `cloud` hoặc `server` | Mặc định: cloud |
-| `XRAY_CLIENT_ID` | Xray API Client ID | Khi dùng Xray Cloud |
-| `XRAY_CLIENT_SECRET` | Xray API Client Secret | Khi dùng Xray Cloud |
-
-### 3. Cách lấy Jira API Token (Cloud)
-
-1. Đăng nhập vào [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
-2. Nhấn **Create API token**
-3. Đặt label (VD: "Claude Automation")
-4. Copy token → dán vào `JIRA_API_TOKEN` trong file `.env`
-
-### 4. Cách lấy Xray Cloud API Key
-
-1. Truy cập [https://app.getxray.app](https://app.getxray.app) → Settings → API Keys
-2. Hoặc trong Jira: Apps → Xray → Settings → API Keys
-3. Tạo API Key mới → Copy **Client ID** và **Client Secret**
+| `JIRA_EMAIL` / `JIRA_API_TOKEN` | Email & API Token (tạo tại `id.atlassian.com/manage-profile/security/api-tokens`) | ✅ (Jira Cloud) |
+| `JIRA_PAT` | Personal Access Token | ✅ (Jira Server/DC) |
+| `JIRA_PROJECT_KEY` | Project key mặc định (VD: `PROJ`) | Khuyến nghị |
+| `XRAY_PLATFORM` | `cloud` (mặc định) hoặc `server` | ✅ (Khi dùng Xray) |
+| `XRAY_CLIENT_ID` / `XRAY_CLIENT_SECRET` | Xray API Key (tạo tại `app.getxray.app` → Settings → API Keys) | ✅ (Xray Cloud) |
 
 ---
 
-## Hướng dẫn sử dụng
+## 3. Lệnh CLI Chuẩn
 
-### Lấy 1 issue cụ thể
+| Tác vụ | Lệnh thực thi |
+|---|---|
+| **Lấy 1 issue cụ thể (JSON / Markdown)** | `node scripts/integrations/jira/jira_fetcher.js --issue PROJ-123 [--format md]` |
+| **Lấy toàn bộ children của 1 Epic** | `node scripts/integrations/jira/jira_fetcher.js --epic PROJ-10 --format md` |
+| **Lấy issues theo Project & Type** | `node scripts/integrations/jira/jira_fetcher.js --project PROJ --type Story --max 20` |
+| **Tìm kiếm theo JQL** | `node scripts/integrations/jira/jira_fetcher.js --jql "project = PROJ AND status = 'To Do'"` |
+| **Đẩy Bug Report (`BUG_*.md`) lên Jira** | `node scripts/integrations/jira/jira_bug_creator.js --file docs/bugs/<module>/BUG_*.md [--project PROJ] [--attach] [--update]` |
+| **Kiểm tra kết nối & xác thực Xray** | `node scripts/integrations/jira/xray_auth.js --verify` |
+| **Import kết quả Playwright JSON lên Xray** | `node scripts/integrations/jira/xray_importer.js --format playwright --file reports/test-results/results.json --project PROJ` |
+| **Import kết quả JUnit XML lên Xray** | `node scripts/integrations/jira/xray_importer.js --format junit --file reports/junit-results.xml --project PROJ` |
 
-```bash
-node scripts/integrations/jira/jira_fetcher.js --issue PROJ-123
-```
-
-### Lấy issues theo project
-
-```bash
-node scripts/integrations/jira/jira_fetcher.js --project PROJ --type Story --max 20
-```
-
-### Tìm theo JQL
-
-```bash
-node scripts/integrations/jira/jira_fetcher.js --jql "project = PROJ AND status = 'To Do'"
-```
-
-### Xuất thành Markdown requirement
-
-```bash
-node scripts/integrations/jira/jira_fetcher.js --issue PROJ-123 --format md
-```
-
-### Lấy children của Epic
-
-```bash
-node scripts/integrations/jira/jira_fetcher.js --epic PROJ-10 --format md
-```
-
-### Test Xray authentication
-
-```bash
-node scripts/integrations/jira/xray_auth.js
-node scripts/integrations/jira/xray_auth.js --verify
-```
-
-### Import kết quả Playwright lên Xray
-
-```bash
-node scripts/integrations/jira/xray_importer.js --format playwright --file ./test-results.json --project PROJ
-```
-
-### Import JUnit XML lên Xray
-
-```bash
-node scripts/integrations/jira/xray_importer.js --format junit --file ./junit-results.xml --project PROJ
-```
+> **Quy ước gắn Test Key:** Đặt mã Xray Test Key trong title của test (VD: `test('[PROJ-123] Đăng nhập hợp lệ', ...)`) để `xray_importer.js` ánh xạ tự động vào đúng Test Issue trên Jira.
 
 ---
 
-## Workflow liên quan
+## 4. Chẩn Đoán Lỗi Thường Gặp (Troubleshooting)
 
-| Workflow | Mô tả |
-|----------|--------|
-| `/fetch-jira-requirements` | Lấy requirements từ Jira ticket và lưu thành file |
-| `/import-test-results-xray` | Đẩy kết quả test lên Xray |
-
----
-
-## Lưu ý quan trọng
-
-- **Bảo mật**: KHÔNG bao giờ commit file `.env` lên Git. File `.gitignore` đã được cấu hình bỏ qua `.env`.
-- **Rate Limiting**: Jira Cloud có giới hạn API calls. Script đã hỗ trợ phân trang (pagination) để tránh vượt limit.
-- **Atlassian Document Format (ADF)**: Jira Cloud sử dụng ADF cho description. Script tự động chuyển đổi ADF → plain text.
-- **Test Key Convention**: Khi import Playwright results, nên đặt test key trong title: `test('[PROJ-123] Login should work', ...)` để Xray mapping đúng test case.
+| Lỗi | Nguyên nhân | Cách khắc phục |
+|---|---|---|
+| `HTTP 401` | Sai API Token / PAT hoặc Client Secret | Kiểm tra lại `JIRA_API_TOKEN`, `JIRA_PAT`, `XRAY_CLIENT_SECRET` trong `.env` |
+| `HTTP 403` | Tài khoản không đủ quyền trên Project/Xray | Cấp quyền Browse Projects / Create Test Execution trên Jira |
+| `HTTP 404` | Sai `JIRA_BASE_URL` hoặc Issue Key không tồn tại | Kiểm tra lại domain Jira và mã Issue/Project |
+| `ENOTFOUND` / `ECONNREFUSED` | Sai tên miền hoặc Jira Server offline | Kiểm tra kết nối mạng/VPN tới Jira Server |
 
 ---
 
-## Troubleshooting
+## 5. Tài Liệu & Workflow Liên Quan
 
-| Lỗi | Nguyên nhân | Giải pháp |
-|------|-------------|-----------|
-| HTTP 401 | Token/password sai | Kiểm tra JIRA_API_TOKEN hoặc JIRA_PAT |
-| HTTP 403 | Không có quyền | Kiểm tra permission trên Jira project |
-| HTTP 404 | URL sai hoặc issue không tồn tại | Kiểm tra JIRA_BASE_URL và issue key |
-| `ENOTFOUND` | DNS không resolve | Kiểm tra JIRA_BASE_URL có đúng domain không |
-| `ECONNREFUSED` | Server không chạy | Kiểm tra Jira Server có online không |
-| File .env not found | Chưa tạo .env | Copy `.env.example` → `.env` |
+- [`references/JIRA_ENV_AND_CLI_GUIDE.md`](references/JIRA_ENV_AND_CLI_GUIDE.md) — Mẫu `.env` đầy đủ và ví dụ CLI chi tiết cho Jira & Xray.
+- [`/fetch-jira-requirements`](../../commands/fetch-jira-requirements.md) — Lấy requirements từ Jira ticket và lưu thành file đầu vào.
+- [`/import-test-results-xray`](../../commands/import-test-results-xray.md) — Đẩy kết quả chạy Automation lên Jira Xray.

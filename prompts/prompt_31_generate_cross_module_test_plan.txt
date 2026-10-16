@@ -1,0 +1,15 @@
+/generate-cross-module-test-plan
+
+# CONTEXT
+- Tính năng xuyên module: [VD: Khuyến mãi & Tính giá đơn hàng / Phân quyền Vai trò áp dụng lên Khách hàng & Dự án]
+- Chuỗi modules đi qua theo thứ tự: [VD: Cấu hình Role -> Quản lý Nhân viên -> Khách hàng -> Dự án -> Báo cáo]
+- Nguồn tài liệu: [Để trống = agent tự đọc docs/requirements/<module>/ của các module liên quan, hoặc dán mô tả nghiệp vụ tại đây]
+
+# CHIẾN LƯỢC TỔ HỢP (COMBINATORIAL STRATEGY)
+[Xoá dòng không dùng:]
+- Output-Class Coverage (mặc định) — tối ưu số lượng tổ hợp theo từng nhóm kết quả đầu ra
+- Pairwise (All-Pairs) — phủ mọi cặp 2 chiều dữ liệu giữa các modules
+- Full Cartesian — phủ toàn bộ tổ hợp (chỉ dùng khi số chiều và giá trị nhỏ)
+
+# GHI CHÚ
+- Đầu ra gồm: **Module Dependency Map**, **Dimension Catalog** (các chiều biến thiên ở mỗi module) và **Combinatorial Test Matrix** (đầu vào trực tiếp cho `/generate-combinatorial-test-data`)

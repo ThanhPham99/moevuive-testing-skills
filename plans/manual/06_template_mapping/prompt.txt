@@ -15,7 +15,7 @@
 
 ## Bảng chuẩn cần có các cột sau:
 
-| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Expected Result | Priority | Test Data | Automatable | Auto Type | Tags |
+| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |
 
 ## Quy tắc khi lập bảng:
 

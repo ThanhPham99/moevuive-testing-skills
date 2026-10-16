@@ -21,10 +21,11 @@ import { buildAntigravityMcpConfig } from './browser-mode.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const INLINE_TOKEN_REGEX = /`([^`\n]+)`|\[([^\]]+)\]\(([^)]+)\)/g;
+const INLINE_TOKEN_REGEX = /`([^`\n]+)`|!?\[([^\]]*)\]\(([^)]+)\)/g;
 const DISCLOSED_REF_REGEX = /\.claude\/skills\/[^)`\s*<>]+\/references\/[^)`\s*<>]+\.md/g;
+const CLI_SCRIPT_REGEX = /\bnode\s+(scripts\/[A-Za-z0-9_./-]+\.(?:m?js|cjs))\b/g;
 const INLINE_REPO_PATH_REGEX =
-  /^(?:(?:\.claude\/(?:rules|skills|commands|playwright-mcp-config\.json)|\.agents\/(?:skills|plugins|skills\.json)|scripts\/(?!integrations\b)|docs\/agents)(?:\/[A-Za-z0-9_.-]+)*\.(?:md|mjs|ts|html|json)|(?:CLAUDE|AGENTS|GLOSSARY)\.md)$/;
+  /^(?:(?:\.claude\/(?:rules|skills|commands|playwright-mcp-config\.json)|\.agents\/(?:skills|plugins|skills\.json)|scripts|docs\/agents)(?:\/[A-Za-z0-9_.-]+)*\.(?:md|m?js|cjs|ts|html|json)|(?:CLAUDE|AGENTS|GLOSSARY)\.md|\.env\.example)$/;
 
 function parseArgs(argv) {
   let checkOnly = false;
@@ -141,10 +142,11 @@ export function parseSkillDocument(content) {
 }
 
 /**
- * Strips fenced code blocks, then resolves both Markdown link Context Pointers `[label](target)`
- * (relative to `path.dirname(sourceFile)` or `repoRoot` if leading `/`) and inline-code
- * repo-relative Context Pointers (e.g., `` `.claude/rules/playwright_rules.md` ``), plus
- * verifies all Progressive Disclosure `.claude/skills/<skill>/references/*.md` paths.
+ * Strips fenced code blocks for general Markdown links/inline tokens, then resolves:
+ *   1. Markdown link Context Pointers `[label](target)`
+ *   2. Inline-code repo-relative Context Pointers (e.g., `` `.claude/rules/playwright_rules.md` ``)
+ *   3. Progressive Disclosure `.claude/skills/<skill>/references/*.md` paths
+ *   4. CLI script invocations `node scripts/...` across both inline code spans and fenced code blocks
  */
 export function resolveContextPointers(content, { sourceFile, repoRoot }) {
   const withoutFenced = content.replace(/```[\s\S]*?```/g, '');
@@ -199,6 +201,12 @@ export function resolveContextPointers(content, { sourceFile, repoRoot }) {
     }
   }
 
+  for (const cliMatch of content.matchAll(CLI_SCRIPT_REGEX)) {
+    const scriptRelPath = cliMatch[1];
+    const resolvedPath = path.resolve(repoRoot, scriptRelPath);
+    recordPointer(scriptRelPath, resolvedPath, 'cli-script');
+  }
+
   const disclosedSkillRefs = [...new Set(withoutFenced.match(DISCLOSED_REF_REGEX) ?? [])];
   let disclosedRefsBytes = 0;
   for (const relRef of disclosedSkillRefs) {
@@ -242,6 +250,55 @@ export function convertCommandToAntigravitySkill(cmdName, content) {
     .replace(/\]\((?:\.\.|\.claude)\/commands\//g, '](../../../.claude/commands/');
 
   return `${fmParts.join('\n')}\n${rewrittenBody}`;
+}
+
+export const VIEWER_CORE_START_MARKER = '/* __VIEWER_CORE_START__ */';
+export const VIEWER_CORE_END_MARKER = '/* __VIEWER_CORE_END__ */';
+
+export function buildBrowserViewerCoreScript(viewerCoreSource) {
+  const browserReady = String(viewerCoreSource || '')
+    .replace(/^export\s+(const|let|function)\b/gm, '$1')
+    .trim();
+  return `${VIEWER_CORE_START_MARKER}\n${browserReady}\n${VIEWER_CORE_END_MARKER}`;
+}
+
+export function syncViewerBundles(rootDir, { checkOnly = false } = {}) {
+  const corePath = path.join(rootDir, 'scripts', 'viewer-core.mjs');
+  if (!fs.existsSync(corePath)) {
+    return { inSync: true, drift: [] };
+  }
+  const coreBlock = buildBrowserViewerCoreScript(fs.readFileSync(corePath, 'utf8'));
+  const drift = [];
+
+  for (const relBundle of [
+    path.join('scripts', 'bugs-viewer', 'bundle.html'),
+    path.join('scripts', 'execution-viewer', 'bundle.html'),
+  ]) {
+    const absBundle = path.join(rootDir, relBundle);
+    if (!fs.existsSync(absBundle)) continue;
+    const current = fs.readFileSync(absBundle, 'utf8');
+    const startIdx = current.indexOf(VIEWER_CORE_START_MARKER);
+    const endIdx = current.indexOf(VIEWER_CORE_END_MARKER);
+    if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+      drift.push(relBundle);
+      continue;
+    }
+    const expected =
+      current.slice(0, startIdx) +
+      coreBlock +
+      current.slice(endIdx + VIEWER_CORE_END_MARKER.length);
+    if (current !== expected) {
+      drift.push(relBundle);
+      if (!checkOnly) {
+        fs.writeFileSync(absBundle, expected, 'utf8');
+      }
+    }
+  }
+
+  return {
+    inSync: drift.length === 0,
+    drift,
+  };
 }
 
 export function syncAntigravity(rootDir, { checkOnly = false } = {}) {
@@ -356,6 +413,10 @@ export function syncAntigravity(rootDir, { checkOnly = false } = {}) {
       }
     }
   }
+
+  // 5. Synchronize viewer-core.mjs into standalone HTML viewers
+  const viewerSync = syncViewerBundles(rootDir, { checkOnly });
+  drift.push(...viewerSync.drift);
 
   return {
     inSync: drift.length === 0 && brokenSkillPointers.length === 0,

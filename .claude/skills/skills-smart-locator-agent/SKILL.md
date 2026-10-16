@@ -5,93 +5,59 @@ description: "Generate and validate unique, resilient UI locators (Primary + Fal
 
 # Smart Locator Agent
 
-Purpose: Generate stable and maintainable locators for UI automation.
-
-Applicable frameworks:
-
-- Playwright
-- Selenium
-- Appium
+Thiết kế và kiểm chứng bộ định vị phần tử giao diện (UI Locators — gồm **Primary** và **Fallback**) bền vững, duy nhất cho **Playwright**, **Selenium WebDriver**, và **Appium** từ DOM hoặc Mobile UI Hierarchy thực tế.
 
 ---
 
-## When to Use
+## 1. Vai Trò & Khi Nào Sử Dụng
 
-Use this skill when:
-
-- Generating locators for new UI elements
-- Reviewing existing locators for stability
-- Migrating locators between frameworks
-
----
-
-## Responsibilities
-
-The agent must:
-
-1. Inspect the DOM or mobile UI hierarchy (NEVER guess)
-2. Identify stable attributes
-3. Generate a reliable locator
-4. Validate locator uniqueness
-5. Provide fallback locator if primary is fragile
+- **Khi sử dụng:**
+  - Trích xuất bộ định vị mới cho các phần tử trên màn hình Web hoặc Mobile (`/generate-locator`).
+  - Cung cấp bộ định vị đạt chuẩn khi viết mới Page Object / Screen Object.
+  - Chuyển đổi bộ định vị giữa các công cụ (Playwright ↔ Selenium ↔ Appium).
+- **Khi cần sửa hàng loạt locator bị gãy trong Page Object đã có:** Sử dụng [`skills-locator-healer-agent`](../skills-locator-healer-agent/SKILL.md) (`/heal-locators`).
 
 ---
 
-## Locator Priority Matrix (Single Source of Truth)
+## 2. Quy Trình 5 Bước Bắt Buộc (Cấm Đoán Mò Locator)
 
-Always select Primary and Fallback locators strictly following the canonical 3-engine **Locator Priority Matrix** (Playwright Web, Selenium WebDriver, Appium Mobile) and scoping rules defined in [`.claude/rules/locator_strategy.md`](../../rules/locator_strategy.md):
-
-- **Playwright (Web):** `getByRole(role, { name })` → `getByLabel()` / `getByPlaceholder()` → `getByText()` → `getByTestId()` → Scoped CSS `.filter()` → Relative XPath. See [`.claude/rules/playwright_rules.md`](../../rules/playwright_rules.md).
-- **Selenium WebDriver (Web):** `By.id()` (stable) → `By.cssSelector("[data-testid='...']")` → `By.name()` → Scoped `By.cssSelector()` → Relative `By.xpath()`. See [`.claude/rules/selenium_rules.md`](../../rules/selenium_rules.md).
-- **Appium (Mobile):** `AppiumBy.accessibilityId()` → `AppiumBy.id()` (`resource-id` / `name`) → `androidUIAutomator` / `iOSNsPredicateString` → `iOSClassChain` → Relative `AppiumBy.xpath()`. See [`.claude/rules/appium_rules.md`](../../rules/appium_rules.md).
-
-### Code Examples
-
-```typescript
-// Playwright
-page.getByRole("button", { name: "Submit" });
-page.getByLabel("Email");
-page.getByPlaceholder("Enter your password");
-```
-
-```java
-// Selenium
-driver.findElement(By.id("login-button"));
-driver.findElement(By.cssSelector("button[data-testid='submit-btn']"));
-
-// Appium
-driver.findElement(AppiumBy.accessibilityId("login_button"));
-driver.findElement(AppiumBy.id("com.app:id/login_button"));
-driver.findElement(AppiumBy.iOSNsPredicateString("label == 'Login'"));
-```
+1. **Khảo sát DOM / UI Hierarchy thực tế (Inspect):**
+   - **Web:** Dùng Playwright MCP (`browser_navigate` → `browser_wait_for` → `browser_snapshot`, mặc định **Headless `1920x1080`**) qua [`skills-ui-debug-agent`](../skills-ui-debug-agent/SKILL.md).
+   - **Mobile:** Trích xuất XML page source thật từ thiết bị/emulator qua [`skills-mobile-debug-agent`](../skills-mobile-debug-agent/SKILL.md).
+2. **Nhận diện thuộc tính bền vững:** Thu thập `role`, `aria-label`, `label`, `placeholder`, `data-testid`, `id`/`name` cố định, `accessibilityId` (`content-desc`/`label`).
+3. **Thiết kế Primary Locator:** Chọn cấp độ ưu tiên cao nhất theo Ma trận mục 3.
+4. **Thiết kế Fallback Locator:** Chọn phương án dự phòng độc lập thuộc tính với Primary (để không gãy cùng lúc nếu 1 thuộc tính đổi).
+5. **Kiểm chứng độ duy nhất (`count === 1`):** Xác nhận locator khớp đúng 1 phần tử hiển thị và tương tác được trên màn hình.
 
 ---
 
-## Validation Rules
+## 3. Ma Trận Ưu Tiên Bộ Định Vị Chuẩn (Single Source of Truth)
 
-Before using a locator, ensure:
+Luôn chọn **Primary** và **Fallback** locator tuân thủ nghiêm ngặt **Ma Trận Ưu Tiên Bộ Định Vị 3 Nền Tảng** và quy tắc định vị theo vùng chứa (Scoping) tại [`.claude/rules/locator_strategy.md`](../../rules/locator_strategy.md):
 
-- [ ] It matches exactly one element
-- [ ] The element is visible and interactable
-- [ ] It is stable across page reloads
-- [ ] It survives cosmetic DOM changes (layout, styling)
-- [ ] It does NOT use dynamic class names or positional xpath
+- **Playwright (Web):** `getByRole(role, { name })` → `getByLabel()` / `getByPlaceholder()` → `getByText()` → `getByTestId()` → Scoped CSS `.filter()` → Relative XPath. Chi tiết: [`.claude/rules/playwright_rules.md`](../../rules/playwright_rules.md).
+- **Selenium WebDriver (Web):** `By.id()` (cố định) → `By.cssSelector("[data-testid='...']")` → `By.name()` → Scoped `By.cssSelector()` → Relative `By.xpath()`. Chi tiết: [`.claude/rules/selenium_rules.md`](../../rules/selenium_rules.md).
+- **Appium (Mobile):** `AppiumBy.accessibilityId()` → `AppiumBy.id()` (`resource-id` / `name`) → `androidUIAutomator` / `iOSNsPredicateString` → `iOSClassChain` → Relative `AppiumBy.xpath()`. Chi tiết: [`.claude/rules/appium_rules.md`](../../rules/appium_rules.md).
 
 ---
 
-## Output Format
+## 4. Quy Tắc Kiểm Chứng & Định Dạng Đầu Ra Chuẩn
 
-When generating locators, provide:
+### Checklist kiểm chứng trước khi bàn giao Locator
+- [ ] Khớp duy nhất 1 phần tử (`count === 1`) trên trạng thái màn hình đích.
+- [ ] Phần tử đang hiển thị (`visible`) và sẵn sàng nhận tương tác (`enabled`).
+- [ ] Giữ nguyên giá trị qua các lần tải lại trang (không chứa chuỗi tự sinh theo phiên).
+- [ ] Không bị ảnh hưởng khi thay đổi bố cục trang trí (CSS styling/layout).
+- [ ] **Tuyệt đối không dùng** class hash động (`css-1a2b3c`, `sc-xxx`) hoặc XPath chỉ số vị trí (`//div[3]/button[2]`).
 
-1. **Primary locator** — The best, most stable option
-2. **Fallback locator** — Alternative if primary breaks
-3. **Reasoning** — Why this locator was chosen
+### Bảng đầu ra chuẩn khi cung cấp Locator
+| Phần tử | Primary Locator | Fallback Locator | Cấp độ bền & Lý do chọn |
+|---|---|---|---|
+| Nút Lưu | `page.getByRole('button', { name: 'Lưu' })` | `page.getByTestId('btn-save')` | 🟢 Cấp 1 — Ngữ nghĩa role + accessible name duy nhất |
 
 ---
 
-## Rules References
+## 5. Tài Liệu Tham Chiếu
 
-- `.claude/rules/locator_strategy.md` — Master locator priority map
-- `.claude/rules/playwright_rules.md` — Playwright-specific locator rules
-- `.claude/rules/selenium_rules.md` — Selenium-specific locator rules
-- `.claude/rules/appium_rules.md` — Appium-specific locator rules
+- [`.claude/rules/locator_strategy.md`](../../rules/locator_strategy.md) — Ma trận ưu tiên bộ định vị 3 nền tảng & mẫu code chuẩn
+- [`.claude/rules/playwright_rules.md`](../../rules/playwright_rules.md) · [`.claude/rules/selenium_rules.md`](../../rules/selenium_rules.md) · [`.claude/rules/appium_rules.md`](../../rules/appium_rules.md)

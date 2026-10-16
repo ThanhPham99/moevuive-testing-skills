@@ -19,14 +19,14 @@ Khởi tạo trọn bộ khung dự án Test Automation mới (Greenfield) theo 
 - **Base URL / App Package** *(Optional)*: URL môi trường `dev`/`staging` hoặc `appPackage`/`bundleId`.
 
 ## Context Pointers (Lazy-Load On Demand)
-- **Framework Architecture & Stack Decision Matrix**: `.claude/skills/skills-framework-architect/SKILL.md`
-- **Template Index**: `.claude/skills/skills-framework-architect/references/CODE_TEMPLATES.md`
+- **Framework Architecture & Stack Decision Matrix**: [`.claude/skills/skills-framework-architect/SKILL.md`](../skills/skills-framework-architect/SKILL.md)
+- **Directory Structure & Template Index**: [`PROJECT_STRUCTURE.md`](../skills/skills-framework-architect/references/PROJECT_STRUCTURE.md) · [`CODE_TEMPLATES.md`](../skills/skills-framework-architect/references/CODE_TEMPLATES.md)
 - **Stack Templates (Chỉ đọc đúng 1 file khớp với stack đã chọn)**:
-  - Playwright TypeScript: `.claude/skills/skills-framework-architect/references/TEMPLATES_PLAYWRIGHT_TS.md`
-  - Playwright Java: `.claude/skills/skills-framework-architect/references/TEMPLATES_PLAYWRIGHT_JAVA.md`
-  - Selenium Java: `.claude/skills/skills-framework-architect/references/TEMPLATES_SELENIUM_JAVA.md`
-  - Appium Java (Mobile): `.claude/skills/skills-framework-architect/references/TEMPLATES_APPIUM_JAVA.md`
-  - Python Pytest & CI/CD: `.claude/skills/skills-framework-architect/references/TEMPLATES_PYTEST_AND_CICD.md`
+  - Playwright TypeScript: [`TEMPLATES_PLAYWRIGHT_TS.md`](../skills/skills-framework-architect/references/TEMPLATES_PLAYWRIGHT_TS.md)
+  - Playwright Java: [`TEMPLATES_PLAYWRIGHT_JAVA.md`](../skills/skills-framework-architect/references/TEMPLATES_PLAYWRIGHT_JAVA.md)
+  - Selenium Java: [`TEMPLATES_SELENIUM_JAVA.md`](../skills/skills-framework-architect/references/TEMPLATES_SELENIUM_JAVA.md)
+  - Appium Java (Mobile): [`TEMPLATES_APPIUM_JAVA.md`](../skills/skills-framework-architect/references/TEMPLATES_APPIUM_JAVA.md)
+  - Python Pytest & CI/CD: [`TEMPLATES_PYTEST_AND_CICD.md`](../skills/skills-framework-architect/references/TEMPLATES_PYTEST_AND_CICD.md)
 
 ## Browser & Execution Mode Rules
 - **Default Headless Mode**: Mọi cấu hình framework Web sinh ra (`playwright.config.ts`, `DriverFactory.java`, `conftest.py`) mặc định chạy **Headless (`1920x1080`)** với cờ tắt GPU (`--disable-gpu`) để tối ưu tốc độ và chạy ngay được trên CI/CD.

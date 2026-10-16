@@ -175,7 +175,7 @@ Nói *"sửa luôn"* / *"cải thiện giùm"* → AI tự chuyển sang **FIX**
 
 📋 Prompt mẫu: [`prompts/prompt_16_execute_test_cases.txt`](prompts/prompt_16_execute_test_cases.txt)
 
-**AI làm gì:** mở browser thật qua Playwright MCP → chạy từng bước theo TC → đối chiếu Expected vs Actual → chấm **PASS / FAIL / BLOCKED / SKIPPED** → thu evidence.
+**AI làm gì:** mở browser thật qua Playwright MCP (mặc định **Headless Mode `1920x1080`, tắt GPU**; dùng `/browser-mode` / [`prompt_29`](prompts/prompt_29_browser_mode.txt) khi cần bật Headed `1600x750` hoặc quay video) → chạy từng bước theo TC → đối chiếu Expected vs Actual → chấm **PASS / FAIL / BLOCKED / SKIPPED** → thu evidence.
 
 ### 🎯 Chiến lược phân tầng thực thi (Execution Tiers)
 Để tối ưu chi phí token và thời gian thực thi (tránh chạy 50 TC qua AI tốn > 1 tiếng):
@@ -240,13 +240,14 @@ TC FAIL → /create-bug-report → dev fix → /retest-fixed-bugs
 
 ---
 
-## Chặng 6 — Ma trận truy vết (RTM)
+## Chặng 6 — Ma trận truy vết (RTM) & Artifact Integrity Gate
 
 ```
 /generate-traceability-matrix
 ```
 
 📋 Prompt mẫu: [`prompts/prompt_13_generate_traceability_matrix.txt`](prompts/prompt_13_generate_traceability_matrix.txt)
+⚡ CLI kiểm tra & trích xuất tức thời (<50ms): `node scripts/validate-docs.mjs --check` và `node scripts/validate-docs.mjs --rtm`
 
 **Ra 4 nhóm phát hiện:**
 
@@ -268,6 +269,7 @@ TC FAIL → /create-bug-report → dev fix → /retest-fixed-bugs
 ```
 
 📋 Prompt mẫu: [`prompts/prompt_24_generate_test_summary_report.txt`](prompts/prompt_24_generate_test_summary_report.txt)
+⚡ CLI tổng hợp & chấm 7 tiêu chí Exit tức thời (<50ms): `npm run docs:summary` hoặc `node scripts/validate-docs.mjs --summary --milestone "<mốc>" --out docs/executions/test_summary_<mốc>.md`
 
 Gộp **mọi** kết quả của cả đợt — execution report nhiều module + bug đang mở + RTM — thành **một** tài liệu gửi PM/khách hàng, kết thúc bằng khuyến nghị **GO / GO có điều kiện / NO-GO** kèm căn cứ.
 
@@ -292,7 +294,8 @@ Không cần đọc file `.md` thô. Mở [`scripts/execution-viewer/bundle.html
 | Nạp file | Xem được gì |
 |---|---|
 | `execution_report.md` · `retest_report.md` (chặng 4–5) | Thống kê PASS/FAIL/BLOCKED/SKIPPED · **so sánh giữa các lần chạy** (🆕 mới fail · 🔁 fail liên tục · ✅ vừa được fix) · cảnh báo BLOCKED > 20%, nợ kiểm thử, data chưa dọn |
-| `traceability_matrix.md` (chặng 6) | **Độ phủ automation** — REQ nào chưa có TC, TC nào chưa automate, REQ mới automate **một phần**, orphan test |
+| `traceability_matrix.md` (chặng 6) | **Độ phủ automation** — REQ nào chưa có TC, TC nào chưa automate, REQ mới automate **một phần**, REQ **ngoài phạm vi**, orphan test |
+| `test_summary_*.md` (chặng 7) | **Tổng hợp Release (`SUMMARY`)** — Banner khuyến nghị GO / GO có điều kiện / NO-GO, bảng 7 Tiêu chí Exit, kết quả theo Module, vùng chưa kiểm thử & danh sách bug đang mở |
 
 Xuất **CSV** hoặc **Excel** (nhiều sheet, ô trạng thái tô màu) đúng phần đang hiển thị.
 
@@ -340,6 +343,10 @@ Cột **`TC cần xử lý`** trong Nhật ký thay đổi của tài liệu req
 | ↻ | `/update-requirements-from-ticket` | [`prompt_21`](prompts/prompt_21_update_requirements_from_ticket.txt) | Mỗi ticket sửa yêu cầu |
 | ↻ | `/update-testcases-from-impact` | [`prompt_27`](prompts/prompt_27_update_testcases_from_impact.txt) | **Mỗi Impact Report** — ngay sau command trên |
 | ⊹ | `/generate-master-test-plan` | [`prompt_25`](prompts/prompt_25_generate_master_test_plan.txt) | 1 lần / đợt — khi cần kế hoạch chính thức |
+| ⊹ | `/generate-application-test-plan` | [`prompt_30`](prompts/prompt_30_generate_application_test_plan.txt) | 1 lần / hệ thống — chiến lược kỹ thuật đa module & E2E |
+| ⊹ | `/generate-cross-module-test-plan` | [`prompt_31`](prompts/prompt_31_generate_cross_module_test_plan.txt) | Khi tính năng đi xuyên qua chuỗi nhiều modules |
+| ⊹ | `/generate-combinatorial-test-data` | [`prompt_32`](prompts/prompt_32_generate_combinatorial_test_data.txt) | Sinh bộ test data tổ hợp từ ma trận liên module |
+| ⊹ | `/browser-mode` | [`prompt_29`](prompts/prompt_29_browser_mode.txt) | Chuyển đổi Headless (`1920x1080`) ↔ Headed (`1600x750`) |
 | ⊹ | `/generate-user-guide` | [`prompt_28`](prompts/prompt_28_generate_user_guide.txt) | Khi bàn giao — tài liệu cho **người dùng cuối**, không phải cho QA |
 
 **Biến thể của chặng 1–2** (không nằm trên luồng chính): `/analyze-requirement-document` → [`prompt_20`](prompts/prompt_20_analyze_requirement_document.txt) · `/generate-testcases-from-requirements` → [`prompt_22`](prompts/prompt_22_generate_testcases_quick.txt).
@@ -364,8 +371,9 @@ Xem lại cảnh báo ở chặng 6.
 | File | Nội dung |
 |---|---|
 | [`AI_FULL_FLOW_AUTOMATION.md`](AI_FULL_FLOW_AUTOMATION.md) | Flow 8 chặng Automation Testing — nối tiếp từ bộ TC của chặng 2–3 |
-| [`CLAUDE.md`](CLAUDE.md) | Quy tắc bắt buộc · cấu trúc `docs/` · danh sách đầy đủ workflows |
+| [`CLAUDE.md`](CLAUDE.md) · [`AGENTS.md`](AGENTS.md) | Quy tắc bắt buộc · cấu trúc `docs/` · đồng bộ song song Claude Code & Antigravity qua [`scripts/sync-antigravity.mjs`](scripts/sync-antigravity.mjs) |
+| [`scripts/validate-docs.mjs`](scripts/validate-docs.mjs) | CLI kiểm định toàn vẹn `docs/` (`--check`), xuất ma trận RTM (`--rtm`) & báo cáo tổng hợp Release (`--summary`) |
 | [`README.md`](README.md) | Tổng quan bộ kit · cài đặt |
 | [`SETUP_CLAUDE.md`](SETUP_CLAUDE.md) | Cài Claude Code + Playwright MCP |
-| [`prompts/README.md`](prompts/README.md) | 32 prompt mẫu copy-paste, chia 7 nhóm tra cứu |
-| [`plans/manual/QUICK_START.md`](plans/manual/QUICK_START.md) | Luồng 6 bước AI-RBT bản copy-paste — dùng cho AI agent khác (Codex · Antigravity · Kiro · Cursor) không có slash command của bộ này |
+| [`prompts/README.md`](prompts/README.md) | 36 prompt mẫu copy-paste (cover đủ 36 workflows), chia 7 nhóm tra cứu |
+| [`plans/manual/QUICK_START.md`](plans/manual/QUICK_START.md) | Luồng 6 bước AI-RBT bản copy-paste — dùng cho AI agent khác không dùng trực tiếp slash command |

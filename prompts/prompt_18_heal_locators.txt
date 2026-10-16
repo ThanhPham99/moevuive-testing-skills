@@ -1,4 +1,5 @@
 /heal-locators
+# (Hoặc dùng /generate-locator nếu cần trích xuất bộ định vị Primary + Fallback mới từ DOM thực tế)
 
 # CONTEXT
 - Mode: [SCAN (chỉ báo cáo) / HEAL (sửa + verify)]

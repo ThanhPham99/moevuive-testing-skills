@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -19,6 +20,7 @@ import {
   parseSkillDocument,
   resolveContextPointers,
   syncAntigravity,
+  syncViewerBundles,
 } from './sync-antigravity.mjs';
 import {
   buildGroupScopeKey,
@@ -39,8 +41,14 @@ import {
   parseBugIndex,
   parseExecutionReport,
   parseRtm,
+  parseTestSummary,
   queryBugsCatalog,
 } from './viewer-core.mjs';
+import {
+  computeTestSummaryReport,
+  computeTraceabilityReport,
+  validateDocsTree,
+} from './validate-docs.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -217,10 +225,58 @@ test('Seam 2: All top-level SKILL.md entry points, Workflow Dispatchers (<= 65 l
   const skillByteMap = new Map();
   for (const d of skillDirs) {
     const skillPath = path.join(skillsDir, d.name, 'SKILL.md');
-    const doc = parseSkillDocument(fs.readFileSync(skillPath, 'utf8'));
+    const rawSkill = fs.readFileSync(skillPath, 'utf8');
+    const doc = parseSkillDocument(rawSkill);
     skillByteMap.set(d.name, doc.bytes);
-    assert.ok(doc.lines < 180, `${d.name}/SKILL.md must be under 180 lines (got ${doc.lines})`);
-    assert.ok(doc.bytes <= 15360, `${d.name}/SKILL.md must be <= 15 KB (got ${doc.bytes} bytes)`);
+    assert.ok(doc.lines <= 95, `${d.name}/SKILL.md must be <= 95 lines (got ${doc.lines})`);
+    assert.ok(doc.bytes <= 9728, `${d.name}/SKILL.md must be <= 9.5 KB / 9,728 bytes (got ${doc.bytes} bytes)`);
+    assert.match(
+      rawSkill,
+      /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i,
+      `${d.name}/SKILL.md must be authored in Vietnamese for consistency across all 20 skills`
+    );
+  }
+
+  for (const rulePath of listFiles(path.join(REPO_ROOT, '.claude', 'rules'), '.md')) {
+    const ruleDoc = parseSkillDocument(fs.readFileSync(rulePath, 'utf8'));
+    const ruleName = path.basename(rulePath);
+    assert.ok(ruleDoc.lines <= 120, `.claude/rules/${ruleName} must be <= 120 lines (got ${ruleDoc.lines})`);
+  }
+
+  const seleniumRulesContent = fs.readFileSync(
+    path.join(REPO_ROOT, '.claude', 'rules', 'selenium_rules.md'),
+    'utf8'
+  );
+  assert.match(
+    seleniumRulesContent,
+    /new Dimension\(1600,\s*750\)/,
+    'selenium_rules.md must configure 1600x750 viewport in Headed Mode'
+  );
+
+  const projectStructurePath = path.join(
+    skillsDir,
+    'skills-framework-architect',
+    'references',
+    'PROJECT_STRUCTURE.md'
+  );
+  const projectStructureDoc = parseSkillDocument(fs.readFileSync(projectStructurePath, 'utf8'));
+  assert.ok(
+    projectStructureDoc.lines <= 120,
+    `PROJECT_STRUCTURE.md must be <= 120 lines (got ${projectStructureDoc.lines})`
+  );
+
+  for (const qaSkill of [
+    'skills-coverage-traceability',
+    'skills-testcase-reviewer',
+    'skills-test-summary-reporter',
+    'skills-bug-reporter',
+  ]) {
+    const qaSkillContent = fs.readFileSync(path.join(skillsDir, qaSkill, 'SKILL.md'), 'utf8');
+    assert.match(
+      qaSkillContent,
+      /scripts\/validate-docs\.mjs/,
+      `${qaSkill}/SKILL.md must reference scripts/validate-docs.mjs for deterministic verification`
+    );
   }
 
   const commandsDir = path.join(REPO_ROOT, '.claude', 'commands');
@@ -275,10 +331,29 @@ test('Seam 3: All Context Pointers, Markdown links, and frontmatter skill refere
   const filesToScan = [
     path.join(REPO_ROOT, 'CLAUDE.md'),
     path.join(REPO_ROOT, 'README.md'),
+    path.join(REPO_ROOT, 'SETUP_CLAUDE.md'),
     path.join(REPO_ROOT, 'HUONG_DAN_CAI_DAT_VA_SU_DUNG.md'),
+    path.join(REPO_ROOT, 'AI_FULL_FLOW_MANUAL.md'),
+    path.join(REPO_ROOT, 'AI_FULL_FLOW_AUTOMATION.md'),
+    path.join(REPO_ROOT, 'GLOSSARY.md'),
+    path.join(REPO_ROOT, 'prompts', 'README.md'),
+    path.join(REPO_ROOT, 'scripts', 'bugs-viewer', 'README.md'),
+    path.join(REPO_ROOT, 'scripts', 'execution-viewer', 'README.md'),
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'README.md'),
+    ...listFiles(path.join(REPO_ROOT, 'plans', 'manual')),
+    ...listFiles(path.join(REPO_ROOT, 'plans', 'automation')),
+    ...listFiles(path.join(REPO_ROOT, 'plans', 'cross-module')),
     ...listFiles(path.join(REPO_ROOT, '.claude', 'rules')),
     ...listFiles(path.join(REPO_ROOT, '.claude', 'commands')),
   ];
+  for (const subRoot of ['manual', 'automation', 'cross-module']) {
+    const base = path.join(REPO_ROOT, 'plans', subRoot);
+    for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        filesToScan.push(...listFiles(path.join(base, entry.name)));
+      }
+    }
+  }
 
   for (const skillName of validSkills) {
     const sDir = path.join(skillsDir, skillName);
@@ -330,14 +405,57 @@ test('Seam 3: All Context Pointers, Markdown links, and frontmatter skill refere
     `Expected at least 250 Context Pointers (including code-labeled links) to be verified across the suite, got ${totalPointersResolved}`
   );
 
-  // Ensure CLAUDE.md Section 5 indexes all 36 slash commands so agents never guess command filenames
+  // Ensure CLAUDE.md Section 5 and prompts/README.md index all 36 slash commands
   const claudeMdContent = fs.readFileSync(path.join(REPO_ROOT, 'CLAUDE.md'), 'utf8');
+  const promptsReadmeContent = fs.readFileSync(path.join(REPO_ROOT, 'prompts', 'README.md'), 'utf8');
+  const promptTxtFiles = listFiles(path.join(REPO_ROOT, 'prompts'), '.txt');
+  assert.equal(
+    promptTxtFiles.length,
+    36,
+    `Expected 36 prompt_*.txt templates in prompts/ matching the 36 workflows, got ${promptTxtFiles.length}`
+  );
+  for (const refMatch of promptsReadmeContent.matchAll(/\b(prompt_[A-Za-z0-9_]+\.txt)\b/g)) {
+    const refName = refMatch[1];
+    assert.ok(
+      fs.existsSync(path.join(REPO_ROOT, 'prompts', refName)),
+      `prompts/README.md references non-existent prompt file 'prompts/${refName}'`
+    );
+  }
+  for (const promptFile of promptTxtFiles) {
+    const baseName = path.basename(promptFile);
+    assert.ok(
+      promptsReadmeContent.includes(baseName),
+      `prompts/README.md must index prompt file '${baseName}'`
+    );
+  }
+
+  const combinedPromptsTxt = promptTxtFiles
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n');
+
   for (const cmdFile of listFiles(path.join(REPO_ROOT, '.claude', 'commands'), '.md')) {
     const cmdSlug = `/${path.basename(cmdFile, '.md')}`;
     assert.ok(
       claudeMdContent.includes(cmdSlug),
       `CLAUDE.md must list slash command '${cmdSlug}' in its Context Pointers index`
     );
+    assert.ok(
+      promptsReadmeContent.includes(cmdSlug),
+      `prompts/README.md must index slash command '${cmdSlug}'`
+    );
+    assert.ok(
+      combinedPromptsTxt.includes(cmdSlug),
+      `At least one template in prompts/prompt_*.txt must reference slash command '${cmdSlug}'`
+    );
+  }
+
+  // Ensure AI_FULL_FLOW_MANUAL.md and AI_FULL_FLOW_AUTOMATION.md reflect Headless default, /browser-mode, Antigravity sync, and validate-docs.mjs
+  for (const guideName of ['AI_FULL_FLOW_MANUAL.md', 'AI_FULL_FLOW_AUTOMATION.md']) {
+    const guideContent = fs.readFileSync(path.join(REPO_ROOT, guideName), 'utf8');
+    assert.match(guideContent, /1920x1080/, `${guideName} must document default Headless Mode (1920x1080)`);
+    assert.match(guideContent, /\/browser-mode/, `${guideName} must document /browser-mode switch`);
+    assert.match(guideContent, /sync-antigravity\.mjs/, `${guideName} must document Antigravity dual-harness sync`);
+    assert.match(guideContent, /validate-docs\.mjs/, `${guideName} must document scripts/validate-docs.mjs gate`);
   }
 });
 
@@ -364,8 +482,8 @@ test('Seam 3: Core QA Domain Invariants, Offline Report Viewer Table Schemas, an
     '## Nhóm A — Smoke (2 TC)',
     headerLine,
     sepLine,
-    '| `TC_LOGIN_010` | `REQ-LOGIN-01` | Login | Thấp | **Đăng nhập** thành công | Đã có tài khoản | 1. Nhập user<br>2. Bấm Login | Mong đợi vào Dashboard | Medium | `user=admin` | Yes | UI | `@Smoke, @Login` |',
-    '| `TC_LOGIN_002` | `REQ-LOGIN-02` | Login | Cao | 🐞 Khoá tài khoản khi sai 5 lần | Đã có tài khoản | 1. Nhập sai 5 lần | Báo lỗi khoá 15 phút | Critical | `pass=wrong` | Yes | UI | `@Security, @Regression` |',
+    '| `TC_LOGIN_010` | `REQ-LOGIN-01` | Login | Thấp | **Đăng nhập** thành công | Đã có tài khoản | 1. Nhập user<br>2. Bấm Login | `user=admin` | Mong đợi vào Dashboard | Medium | Yes | UI | `@Smoke, @Login` |',
+    '| `TC_LOGIN_002` | `REQ-LOGIN-02` | Login | Cao | 🐞 Khoá tài khoản khi sai 5 lần | Đã có tài khoản | 1. Nhập sai 5 lần | `pass=wrong` | Báo lỗi khoá 15 phút | Critical | Yes | UI | `@Security, @Regression` |',
   ].join('\n');
 
   const parsedFile = parseMarkdownFile('test_cases_login.md', sampleMd);
@@ -736,6 +854,74 @@ test('Seam 6: Shared Viewer Core Module (Bugs, Execution, RTM, Export Plan, CSV 
   });
   assert.equal(execPlan.sheets.length, 3);
 
+  // 2b. Test Summary Report (test_summary_*.md) parser & multi-sheet Export Plan
+  const realSummaryForViewer = computeTestSummaryReport(REPO_ROOT, {
+    module: 'login',
+    milestone: 'Sprint 12',
+  });
+  const directSummaryParsed = parseTestSummary(
+    realSummaryForViewer.markdown,
+    'test_summary_sprint12.md'
+  );
+  assert.equal(directSummaryParsed.kind, 'summary');
+  assert.equal(directSummaryParsed.recommendation, 'NO_GO');
+  assert.match(directSummaryParsed.recommendationLabel, /NO-GO/);
+  assert.equal(directSummaryParsed.exitCriteria[0].idx, '1');
+  assert.equal(directSummaryParsed.modules[0].prefix, 'LOGIN');
+  assert.equal(directSummaryParsed.modules[0].openBugs, 6);
+  assert.match(directSummaryParsed.modules[0].latestRun, /run_1787215085/);
+  assert.equal(directSummaryParsed.totals.executedModulesCount, 1);
+  assert.equal(directSummaryParsed.totals.totalExecuted, 41);
+  assert.equal(directSummaryParsed.rtmSummary.length, 3);
+
+  const parsedSummaryDoc = parseExecutionReport(
+    realSummaryForViewer.markdown,
+    'test_summary_sprint12.md'
+  );
+  assert.equal(parsedSummaryDoc.kind, 'summary', 'parseExecutionReport must classify test_summary_*.md as kind="summary"');
+  assert.equal(parsedSummaryDoc.summary.verdict, 'NO_GO');
+  assert.equal(parsedSummaryDoc.summary.recommendation, 'NO_GO');
+  assert.equal(parsedSummaryDoc.summary.exitCriteria.length, 7);
+  assert.equal(parsedSummaryDoc.summary.exitCriteria[0].status, 'FAIL');
+  assert.equal(parsedSummaryDoc.summary.modules.length, 1);
+  assert.equal(parsedSummaryDoc.summary.modules[0].module, 'login');
+  assert.equal(parsedSummaryDoc.summary.modules[0].pass, 32);
+  assert.equal(parsedSummaryDoc.summary.openBugs.length, 6);
+  assert.equal(parsedSummaryDoc.summary.rtmMetrics.length, 3);
+
+  const summaryExportPlan = buildExecutionExportPlan(parsedSummaryDoc);
+  assert.equal(summaryExportPlan.base, 'test_summary_report');
+  assert.deepEqual(
+    summaryExportPlan.sheets.map((s) => s.name),
+    ['Tiêu chí Exit', 'Kết quả theo Module', 'Vùng chưa kiểm thử', 'Bug đang mở', 'Độ phủ RTM'],
+    'When untested is non-empty, all 5 summary sheets must be emitted'
+  );
+  const bugSheet = summaryExportPlan.sheets.find((s) => s.name === 'Bug đang mở');
+  assert.equal(bugSheet.statusCol, 6, 'Bug đang mở sheet must set statusCol: 6');
+
+  const noUntestedPlan = buildExecutionExportPlan({
+    ...parsedSummaryDoc,
+    summary: { ...parsedSummaryDoc.summary, untested: [] },
+  });
+  assert.deepEqual(
+    noUntestedPlan.sheets.map((s) => s.name),
+    ['Tiêu chí Exit', 'Kết quả theo Module', 'Bug đang mở', 'Độ phủ RTM'],
+    'When untested is empty, Vùng chưa kiểm thử sheet must be omitted'
+  );
+
+  const fullSummaryForViewer = computeTestSummaryReport(REPO_ROOT, { milestone: 'Release 1.0' });
+  const parsedFullSummary = parseTestSummary(fullSummaryForViewer.markdown, 'test_summary_rel1.md');
+  assert.ok(parsedFullSummary.untested.length >= 2);
+  assert.ok(parsedFullSummary.untested[0].prefix.length >= 2);
+  const fullSummaryExportPlan = buildExecutionExportPlan({
+    tab: 'sum',
+    summaryDoc: parsedFullSummary,
+  });
+  const summaryXlsxAscii = Buffer.from(buildXlsxBytes(fullSummaryExportPlan)).toString('utf8');
+  assert.match(summaryXlsxAscii, /Tiêu chí Exit/);
+  assert.match(summaryXlsxAscii, /Kết quả theo Module/);
+  assert.match(summaryXlsxAscii, /Vùng chưa kiểm thử/);
+
   // 3. CSV (with BOM) and Binary XLSX store-ZIP serializer verification
   const csvStr = buildCsvString(bugsPlan);
   assert.ok(csvStr.startsWith('\uFEFF"Mã bug",'), 'CSV output must start with UTF-8 BOM \\uFEFF');
@@ -777,6 +963,19 @@ test('Seam 6: Shared Viewer Core Module (Bugs, Execution, RTM, Export Plan, CSV 
   const execBundle = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'execution-viewer', 'bundle.html'), 'utf8');
   assert.match(bugsBundle, /if\(\$\('#lightbox'\)\.classList\.contains\('open'\)\)\s*closeLightbox\(\);\s*else\s*\$\('#detail'\)\.classList\.remove\('open'\);/);
   assert.match(execBundle, /if\(\$\('#lightbox'\)\.classList\.contains\('open'\)\)\s*return\s+closeLightbox\(\);\s*\$\('#detail'\)\.classList\.remove\('open'\);/);
+
+  // 5. Verify all real bug files in docs/bugs/login/ have complete Build/Version & REQ ID metadata (zero missingRef alerts)
+  const realBugDir = path.join(REPO_ROOT, 'docs', 'bugs', 'login');
+  const realBugs = fs
+    .readdirSync(realBugDir)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => parseBugFile(fs.readFileSync(path.join(realBugDir, f), 'utf8'), f));
+  const realBugCatalog = queryBugsCatalog(realBugs);
+  assert.equal(
+    realBugCatalog.alerts.missingRef.length,
+    0,
+    `Expected zero missingRef alerts across docs/bugs/login/*.md, got: ${realBugCatalog.alerts.missingRef.map((b) => b.id).join(', ')}`
+  );
 });
 
 test('Seam 7: Canonical Locator Priority Matrix in .claude/rules/locator_strategy.md and Legacy Plans Schema Parity', () => {
@@ -841,8 +1040,8 @@ test('Seam 7: Canonical Locator Priority Matrix in .claude/rules/locator_strateg
   );
   assert.match(
     plan06,
-    /\|\s*TC ID\s*\|\s*REQ ID\s*\|\s*Module\s*\|\s*Risk Level\s*\|\s*Test Scenario\s*\|\s*Pre-Condition\s*\|\s*Test Steps\s*\|\s*Expected Result\s*\|\s*Priority\s*\|\s*Test Data\s*\|\s*Automatable\s*\|\s*Auto Type\s*\|\s*Tags\s*\|/,
-    'plans/manual/06_template_mapping/prompt.txt must use the canonical 13-column order (Test Steps | Expected Result | Priority | Test Data)'
+    /\|\s*TC ID\s*\|\s*REQ ID\s*\|\s*Module\s*\|\s*Risk Level\s*\|\s*Test Scenario\s*\|\s*Pre-Condition\s*\|\s*Test Steps\s*\|\s*Test Data\s*\|\s*Expected Result\s*\|\s*Priority\s*\|\s*Automatable\s*\|\s*Auto Type\s*\|\s*Tags\s*\|/,
+    'plans/manual/06_template_mapping/prompt.txt must use the canonical 13-column order (Test Steps | Test Data | Expected Result | Priority)'
   );
   assert.match(plan06, /⏭️\s*Cố ý bỏ/);
 
@@ -855,4 +1054,1337 @@ test('Seam 7: Canonical Locator Priority Matrix in .claude/rules/locator_strateg
   assert.match(planAuto, /trang_thai_cuoi_cua_test/);
   assert.match(planAuto, /trang_thai_khi_that_bai/);
 });
+
+test('Seam 8: Viewer Core Synchronization projects viewer-core.mjs into standalone HTML viewers with zero duplication', () => {
+  const viewerSync = syncViewerBundles(REPO_ROOT, { checkOnly: true });
+  assert.equal(
+    viewerSync.inSync,
+    true,
+    `Expected standalone HTML viewers to be in sync with viewer-core.mjs, got drift=${JSON.stringify(viewerSync.drift)}`
+  );
+
+  const bugsBundle = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'bugs-viewer', 'bundle.html'),
+    'utf8'
+  );
+  const execBundle = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'execution-viewer', 'bundle.html'),
+    'utf8'
+  );
+
+  for (const [name, html] of [
+    ['bugs-viewer/bundle.html', bugsBundle],
+    ['execution-viewer/bundle.html', execBundle],
+  ]) {
+    assert.ok(
+      html.includes('/* __VIEWER_CORE_START__ */') && html.includes('/* __VIEWER_CORE_END__ */'),
+      `${name} must contain the deterministic viewer-core.mjs injection markers`
+    );
+    assert.ok(
+      !html.includes('function zipStore(') && !html.includes('function sheetXml('),
+      `${name} must not retain hand-copied zipStore() or sheetXml() implementations`
+    );
+    assert.match(html, /buildCsvString\(/, `${name} must delegate CSV serialization to viewer-core.mjs`);
+    assert.match(html, /buildXlsxBytes\(/, `${name} must delegate XLSX serialization to viewer-core.mjs`);
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch, `${name} must contain a <script> block`);
+    assert.ok(!html.includes('<<script>'), `${name} must not contain a malformed <<script> tag`);
+    assert.doesNotThrow(
+      () => new Function(scriptMatch[1]),
+      `${name} embedded <script> must parse with zero JavaScript syntax errors`
+    );
+  }
+
+  assert.match(bugsBundle, /queryBugsCatalog\(/, 'bugs-viewer must delegate catalog querying/sorting to viewer-core.mjs');
+  assert.match(bugsBundle, /buildBugsExportPlan\(/, 'bugs-viewer must delegate Export Plan building to viewer-core.mjs');
+  assert.match(execBundle, /parseExecutionReport\(/, 'execution-viewer must delegate report parsing to viewer-core.mjs');
+  assert.match(execBundle, /computeExecutionTrend\(/, 'execution-viewer must delegate trend calculation to viewer-core.mjs');
+  assert.match(execBundle, /buildExecutionExportPlan\(/, 'execution-viewer must delegate Export Plan building to viewer-core.mjs');
+  assert.match(execBundle, /data-tab="sum"/, 'execution-viewer must provide the Tổng hợp Release (sum) tab for test_summary_*.md');
+  assert.match(execBundle, /function renderSummary\(/, 'execution-viewer must define renderSummary() for kind="summary" reports');
+
+  // Verify testcases-viewer parity (wrapper delegation to viewer-core.mjs, bundle.html 13-col & XLSX ZIP headers, README.md React 19 & viewer-core.mjs docs)
+  const tcParserSrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'src', 'lib', 'parser.ts'),
+    'utf8'
+  );
+  const tcExportSrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'src', 'lib', 'export.ts'),
+    'utf8'
+  );
+  assert.match(tcParserSrc, /\.\.\/\.\.\/\.\.\/viewer-core\.mjs/, 'testcases-viewer parser.ts must delegate to scripts/viewer-core.mjs');
+  assert.match(tcExportSrc, /\.\.\/\.\.\/\.\.\/viewer-core\.mjs/, 'testcases-viewer export.ts must delegate to scripts/viewer-core.mjs');
+
+  const tcBundle = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'bundle.html'),
+    'utf8'
+  );
+  assert.match(tcBundle, /Test Scenario/, 'testcases-viewer/bundle.html must include canonical Test Scenario column');
+  assert.match(tcBundle, /application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet/, 'testcases-viewer/bundle.html must support .xlsx export');
+
+  const tcReadme = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'README.md'),
+    'utf8'
+  );
+  assert.match(tcReadme, /React 19/, 'scripts/testcases-viewer/README.md must document React 19');
+  assert.match(tcReadme, /viewer-core\.mjs/, 'scripts/testcases-viewer/README.md must document delegation to scripts/viewer-core.mjs');
+
+  const tcViteConfig = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'vite.config.ts'),
+    'utf8'
+  );
+  assert.ok(
+    !tcViteConfig.includes('__dirname'),
+    'scripts/testcases-viewer/vite.config.ts must use ESM-safe URL/dirname resolution instead of bare __dirname'
+  );
+  assert.ok(
+    !fs.existsSync(path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'postcss.config.js')),
+    'scripts/testcases-viewer/postcss.config.js must be replaced by .postcssrc.json so Parcel 2 caches PostCSS without warnings'
+  );
+  const tcPostcssRc = readJson(
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', '.postcssrc.json')
+  );
+  assert.ok(
+    tcPostcssRc?.plugins?.tailwindcss !== undefined,
+    'scripts/testcases-viewer/.postcssrc.json must configure tailwindcss plugin'
+  );
+
+  // Verify root & viewer documentation parity (--summary, test_summary_*.md, OUTOFSCOPE, scripts/integrations/jira/)
+  const rootReadme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+  assert.match(rootReadme, /--summary/, 'README.md must document validate-docs.mjs --summary');
+  assert.match(rootReadme, /integrations\/jira/, 'README.md must document scripts/integrations/jira/');
+
+  const manualFlowDoc = fs.readFileSync(path.join(REPO_ROOT, 'AI_FULL_FLOW_MANUAL.md'), 'utf8');
+  assert.match(manualFlowDoc, /validate-docs\.mjs --summary/, 'AI_FULL_FLOW_MANUAL.md must document node scripts/validate-docs.mjs --summary');
+  assert.match(manualFlowDoc, /test_summary_/, 'AI_FULL_FLOW_MANUAL.md viewer table must document test_summary_*.md');
+
+  const execViewerReadme = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'execution-viewer', 'README.md'),
+    'utf8'
+  );
+  assert.match(execViewerReadme, /test_summary_/, 'scripts/execution-viewer/README.md must document test_summary_*.md');
+  assert.match(execViewerReadme, /Ngoài phạm vi/, 'scripts/execution-viewer/README.md must document the 5th RTM status (Ngoài phạm vi)');
+});
+
+test('Seam 9: Artifact Integrity Gate (scripts/validate-docs.mjs) validates docs/ schemas, pointers, and RTM coverage', () => {
+  // 1. Validate the real repository docs/ tree
+  const realValidation = validateDocsTree(REPO_ROOT);
+  assert.equal(
+    realValidation.brokenPointers.length,
+    0,
+    `Expected zero broken pointers in docs/, got:\n${realValidation.brokenPointers.map((p) => `  - ${p.sourceFile}: ${p.rawTarget}`).join('\n')}`
+  );
+  assert.equal(
+    realValidation.schemaViolations.length,
+    0,
+    `Expected zero schema violations in docs/, got:\n${realValidation.schemaViolations.map((s) => `  - ${s.file}: ${s.message}`).join('\n')}`
+  );
+  assert.equal(
+    realValidation.referentialErrors.length,
+    0,
+    `Expected zero referential integrity errors in docs/, got:\n${realValidation.referentialErrors.map((r) => `  - ${r.file}: ${r.message}`).join('\n')}`
+  );
+  assert.equal(realValidation.valid, true);
+  assert.ok(realValidation.modules.includes('login'), 'validateDocsTree must discover login module');
+  assert.ok(realValidation.modules.includes('customers'), 'validateDocsTree must discover customers module');
+  assert.ok(realValidation.modules.includes('projects'), 'validateDocsTree must discover projects module');
+
+  // 2. Compute deterministic RTM for login module
+  const rtm = computeTraceabilityReport(REPO_ROOT, { module: 'login' });
+  assert.equal(rtm.summary.totalReqs, 43, 'login module must have 43 REQs');
+  assert.equal(rtm.summary.totalTcs, 50, 'login module must have 50 TCs');
+  assert.equal(rtm.summary.coveredReqs, 39, 'login module must have 39 covered in-scope REQs');
+  assert.equal(rtm.summary.outOfScopeReqs, 4, 'login module must recognize 4 out-of-scope REQs');
+  assert.ok(rtm.summary.executedTcs > 0, 'login module RTM must report executedTcs > 0');
+  assert.ok(rtm.summary.openBugs > 0, 'login module RTM must report openBugs > 0');
+  assert.equal(rtm.orphanTcs.length, 0, 'login module must have zero orphan TCs');
+  assert.match(rtm.markdown, /\|\s*REQ ID\s*\|\s*Mô tả ngắn\s*\|\s*TC IDs\s*\|\s*Automation\s*\|\s*Trạng thái\s*\|/);
+  assert.match(rtm.markdown, /Bug đang mở/);
+  const parsedJson = JSON.parse(JSON.stringify(rtm));
+  assert.equal(parsedJson.summary.coveragePct, 100);
+
+  // 3. Verify synthetic broken docs/ tree triggers brokenPointers, schemaViolations, and referentialErrors
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'validate-docs-test-'));
+  try {
+    const reqDir = path.join(tmpRoot, 'docs', 'requirements', 'auth');
+    const tcDir = path.join(tmpRoot, 'docs', 'testcases', 'auth');
+    const execDir = path.join(tmpRoot, 'docs', 'executions', 'auth', 'run_1');
+    const bugDir = path.join(tmpRoot, 'docs', 'bugs', 'auth');
+    fs.mkdirSync(reqDir, { recursive: true });
+    fs.mkdirSync(tcDir, { recursive: true });
+    fs.mkdirSync(execDir, { recursive: true });
+    fs.mkdirSync(bugDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(reqDir, 'requirements_auth.md'),
+      [
+        '# Requirements Auth',
+        'Broken link: [missing](../missing.md)',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-AUTH-01 | Login | Desc | AC | 🟢 | — | DOM |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tcDir, 'test_cases_auth.md'),
+      [
+        '# Test Cases Auth',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_AUTH_TC_001 | REQ-AUTH-99 | AUTH | High | Invalid REQ ref | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(execDir, 'execution_report.md'),
+      [
+        '# Execution Report — Auth',
+        '## 2. Kết quả từng TC',
+        '| TC ID | Test Scenario | Kết quả | Ghi chú |',
+        '|---|---|---|---|',
+        '| CRM_AUTH_TC_999 | Missing 5th column and unknown TC | ❌ FAIL | [img](evidence/missing.png) |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const badResult = validateDocsTree(tmpRoot);
+    assert.equal(badResult.valid, false);
+    assert.ok(badResult.brokenPointers.length >= 2, 'Must detect broken markdown link and missing evidence image');
+    assert.ok(badResult.schemaViolations.length >= 1, 'Must detect malformed 4-column execution report table');
+    assert.ok(badResult.referentialErrors.length >= 1, 'Must detect unknown REQ-AUTH-99 reference');
+
+    // 4. Verify RETEST_WORKFLOW_AND_REPORT.md and BUG_REPORT_TEMPLATE_AND_JIRA.md templates parse cleanly via viewer-core.mjs
+    const retestRefContent = fs.readFileSync(
+      path.join(
+        REPO_ROOT,
+        '.claude',
+        'skills',
+        'skills-manual-test-executor',
+        'references',
+        'RETEST_WORKFLOW_AND_REPORT.md'
+      ),
+      'utf8'
+    );
+    const retestTplMatch = retestRefContent.match(/```markdown\r?\n([\s\S]*?)```/);
+    assert.ok(retestTplMatch, 'RETEST_WORKFLOW_AND_REPORT.md must contain a ```markdown template block');
+    const parsedRetestTpl = parseExecutionReport(retestTplMatch[1], 'retest_report.md');
+    assert.equal(parsedRetestTpl.kind, 'retest');
+    assert.ok(
+      parsedRetestTpl.bugs.length >= 1,
+      'RETEST_WORKFLOW_AND_REPORT.md template must parse >= 1 bug entry via parseExecutionReport()'
+    );
+    assert.ok(
+      parsedRetestTpl.tcs.length >= 1,
+      'RETEST_WORKFLOW_AND_REPORT.md template must parse >= 1 regression TC row via parseExecutionReport()'
+    );
+
+    const bugRefContent = fs.readFileSync(
+      path.join(
+        REPO_ROOT,
+        '.claude',
+        'skills',
+        'skills-bug-reporter',
+        'references',
+        'BUG_REPORT_TEMPLATE_AND_JIRA.md'
+      ),
+      'utf8'
+    );
+    const bugTplMatch = bugRefContent.match(/```markdown\r?\n([\s\S]*?)```/);
+    assert.ok(bugTplMatch, 'BUG_REPORT_TEMPLATE_AND_JIRA.md must contain a ```markdown template block');
+    const parsedBugTpl = parseBugFile(bugTplMatch[1], 'BUG_login_1787226514_TC016.md');
+    assert.match(parsedBugTpl.id, /^BUG_/);
+    assert.ok(parsedBugTpl.tc.length > 0, 'BUG_REPORT_TEMPLATE_AND_JIRA.md template must parse non-empty tc');
+    assert.ok(parsedBugTpl.req.length > 0, 'BUG_REPORT_TEMPLATE_AND_JIRA.md template must parse non-empty req');
+    assert.ok(parsedBugTpl.steps.length > 0, 'BUG_REPORT_TEMPLATE_AND_JIRA.md template must parse non-empty steps');
+    assert.ok(parsedBugTpl.expected.length > 0, 'BUG_REPORT_TEMPLATE_AND_JIRA.md template must parse non-empty expected');
+    assert.ok(parsedBugTpl.actual.length > 0, 'BUG_REPORT_TEMPLATE_AND_JIRA.md template must parse non-empty actual');
+
+    // 5. Verify validateDocsTree supports RETEST mode (no regression TCs), FULL mode (with regression TCs), and "Test Title" header alias
+    const validRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'validate-retest-ok-'));
+    try {
+      const vReqDir = path.join(validRoot, 'docs', 'requirements', 'auth');
+      const vTcDir = path.join(validRoot, 'docs', 'testcases', 'auth');
+      const vBugDir = path.join(validRoot, 'docs', 'bugs', 'auth');
+      const vRetestOnlyDir = path.join(validRoot, 'docs', 'executions', 'auth', 'retest_1');
+      const vRetestFullDir = path.join(validRoot, 'docs', 'executions', 'auth', 'retest_2');
+      fs.mkdirSync(vReqDir, { recursive: true });
+      fs.mkdirSync(vTcDir, { recursive: true });
+      fs.mkdirSync(vBugDir, { recursive: true });
+      fs.mkdirSync(vRetestOnlyDir, { recursive: true });
+      fs.mkdirSync(vRetestFullDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(vReqDir, 'requirements_auth.md'),
+        [
+          '# Requirements Auth',
+          '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+          '|---|---|---|---|---|---|---|',
+          '| REQ-AUTH-01 | Login | Desc | AC | 🟢 | — | DOM |',
+        ].join('\n'),
+        'utf8'
+      );
+
+      // Uses "Test Title" instead of "Test Scenario"
+      fs.writeFileSync(
+        path.join(vTcDir, 'test_cases_auth.md'),
+        [
+          '# Test Cases Auth',
+          '| TC ID | REQ ID | Module | Risk Level | Test Title | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+          '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+          '| CRM_AUTH_TC_001 | REQ-AUTH-01 | AUTH | High | Valid Login | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+        ].join('\n'),
+        'utf8'
+      );
+
+      fs.writeFileSync(
+        path.join(vBugDir, 'BUG_auth_1787000001_TC001.md'),
+        [
+          '# [BUG] Login fails',
+          '## Thông tin chung',
+          '- **ID:** BUG_auth_1787000001_TC001',
+          '- **Severity:** 🟠 Major',
+          '- **Priority:** P1',
+          '- **Môi trường:** Staging',
+          '- **Build / Version:** v1.0.0',
+          '- **Test case liên quan:** CRM_AUTH_TC_001',
+          '- **REQ ID liên quan:** REQ-AUTH-01',
+          '- **Ngày phát hiện:** 2026-08-20',
+          '## Steps to Reproduce',
+          '1. Login',
+          '## Expected Result',
+          'Dashboard',
+          '## Actual Result',
+          'Error 500',
+          '## Lịch sử retest',
+          '| Ngày | Build | Kết quả | Retest report | Ghi chú |',
+          '|---|---|---|---|---|',
+        ].join('\n'),
+        'utf8'
+      );
+
+      // RETEST mode: only bug verification table, no regression TC table
+      fs.writeFileSync(
+        path.join(vRetestOnlyDir, 'retest_report.md'),
+        [
+          '# Retest Report — Auth · RETEST',
+          '| Thông tin | Nội dung |',
+          '|---|---|',
+          '| Retest ID | retest_1 |',
+          '| Mode | RETEST |',
+          '## 2. Kết quả từng bug',
+          '### BUG_auth_1787000001_TC001 — Login fails',
+          '| Thông tin | Nội dung |',
+          '|---|---|',
+          '| Bug | BUG_auth_1787000001_TC001 |',
+          '| Severity gốc | 🟠 Major |',
+          '| TC / REQ liên quan | CRM_AUTH_TC_001 · REQ-AUTH-01 |',
+          '| Số lần lặp | 2/2 |',
+          '| **Kết quả** | ✅ FIXED |',
+        ].join('\n'),
+        'utf8'
+      );
+
+      // FULL mode: bug verification table + 5-column regression table (TC ID | Vòng | Kịch bản | Kết quả | Ghi chú)
+      fs.writeFileSync(
+        path.join(vRetestFullDir, 'retest_report.md'),
+        [
+          '# Retest Report — Auth · FULL',
+          '| Thông tin | Nội dung |',
+          '|---|---|',
+          '| Retest ID | retest_2 |',
+          '| Mode | FULL |',
+          '## 2. Kết quả từng bug',
+          '### BUG_auth_1787000001_TC001 — Login fails',
+          '| Thông tin | Nội dung |',
+          '|---|---|',
+          '| Bug | BUG_auth_1787000001_TC001 |',
+          '| TC / REQ liên quan | CRM_AUTH_TC_001 · REQ-AUTH-01 |',
+          '| **Kết quả** | ✅ FIXED |',
+          '## 3. Kết quả regression',
+          '| TC ID | Vòng | Kịch bản | Kết quả | Ghi chú |',
+          '|---|---|---|---|---|',
+          '| CRM_AUTH_TC_001 | Vòng 1 | Valid Login | ✅ PASS | — |',
+        ].join('\n'),
+        'utf8'
+      );
+
+      const okRes = validateDocsTree(validRoot);
+      assert.equal(
+        okRes.valid,
+        true,
+        `Expected valid RETEST/FULL retest_report.md and Test Title alias to pass validateDocsTree, got schema=${JSON.stringify(okRes.schemaViolations)}, ref=${JSON.stringify(okRes.referentialErrors)}`
+      );
+
+      // 6. Verify secondary system catalog (_book-api/README.md), user-guides/README.md, user_guide_<module>.md, impact_*.md, and changelog validation
+      const bookApiDir = path.join(validRoot, 'docs', 'requirements', '_book-api');
+      const ugDir = path.join(validRoot, 'docs', 'user-guides', 'auth');
+      const impactDir = path.join(vReqDir, 'impact');
+      fs.mkdirSync(bookApiDir, { recursive: true });
+      fs.mkdirSync(ugDir, { recursive: true });
+      fs.mkdirSync(impactDir, { recursive: true });
+
+      // Discontinuous ID range in secondary system catalog (_book-api/README.md using "Mã" column)
+      fs.writeFileSync(
+        path.join(bookApiDir, 'README.md'),
+        [
+          '# Book API Catalog',
+          '## 1. Bảng danh mục module',
+          '| Module | Mã | Số endpoint | Trạng thái | Tài liệu | REQ đã dùng | Mã kế tiếp | AMB treo | Cập nhật |',
+          '|---|---|---|---|---|---|---|---|---|',
+          '| Auth | `AUTH` | 6 | ✅ Đã có tài liệu | — | `REQ-BK-AUTH-01` → `REQ-BK-AUTH-05` | `REQ-BK-AUTH-09` | — | 2026-08-14 |',
+          '| | | **6** | | | | | | |',
+        ].join('\n'),
+        'utf8'
+      );
+
+      // Malformed user-guides/README.md catalog (only 3 columns instead of >=7)
+      fs.writeFileSync(
+        path.join(validRoot, 'docs', 'user-guides', 'README.md'),
+        [
+          '# Danh mục Hướng dẫn sử dụng',
+          '## 1. Bảng danh mục',
+          '| Module | Đối tượng đọc | Cập nhật |',
+          '|---|---|---|',
+          '| [Auth](auth/user_guide_auth.md) | Admin | 2026-09-09 |',
+        ].join('\n'),
+        'utf8'
+      );
+
+      // user_guide_auth.md referencing unknown REQ-AUTH-88 inside HTML comment and prose
+      fs.writeFileSync(
+        path.join(ugDir, 'user_guide_auth.md'),
+        [
+          '# Hướng dẫn sử dụng Auth',
+          '<!-- Nguồn: REQ-AUTH-01, REQ-AUTH-88 -->',
+          '## 6. Vùng chưa xác minh (nội bộ)',
+          '| Nội dung | Vì sao chưa xác minh | Ảnh hưởng |',
+          '|---|---|---|',
+          '| MFA | `REQ-AUTH-77` chưa kiểm chứng | — |',
+        ].join('\n'),
+        'utf8'
+      );
+
+      // impact report referencing unknown REQ-AUTH-66 and unknown CRM_AUTH_TC_888
+      fs.writeFileSync(
+        path.join(impactDir, 'impact_CR-999.md'),
+        [
+          '# Báo Cáo Tác Động — CR-999',
+          '| REQ ID | Tóm tắt | TC bị ảnh hưởng |',
+          '|---|---|---|',
+          '| REQ-AUTH-66 | Unknown req in impact | CRM_AUTH_TC_888 |',
+        ].join('\n'),
+        'utf8'
+      );
+
+      const multiErrRes = validateDocsTree(validRoot);
+      assert.equal(multiErrRes.valid, false);
+      assert.ok(
+        multiErrRes.schemaViolations.some((s) => s.file.includes('_book-api/README.md')),
+        'validateDocsTree must detect ID range discontinuity in secondary system catalog _book-api/README.md'
+      );
+      assert.ok(
+        multiErrRes.schemaViolations.some((s) => s.file.includes('user-guides/README.md')),
+        'validateDocsTree must detect malformed catalog table in docs/user-guides/README.md'
+      );
+      assert.ok(
+        multiErrRes.referentialErrors.some(
+          (r) => r.file.includes('user_guide_auth.md') && r.message.includes('REQ-AUTH-88')
+        ),
+        'validateDocsTree must detect unknown REQ ID inside <!-- Nguồn: ... --> comment in user_guide_<module>.md'
+      );
+      assert.ok(
+        multiErrRes.referentialErrors.some(
+          (r) => r.file.includes('impact_CR-999.md') && r.message.includes('REQ-AUTH-66')
+        ),
+        'validateDocsTree must detect unknown REQ ID in docs/requirements/<module>/impact/impact_*.md'
+      );
+      assert.ok(
+        multiErrRes.referentialErrors.some(
+          (r) => r.file.includes('impact_CR-999.md') && r.message.includes('CRM_AUTH_TC_888')
+        ),
+        'validateDocsTree must detect unknown TC ID in docs/requirements/<module>/impact/impact_*.md'
+      );
+    } finally {
+      fs.rmSync(validRoot, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('Seam 10: CLI Script Pointer Gate (inline & fenced node scripts/...) and canonical .env.example', () => {
+  // 1. Verify resolveContextPointers detects missing CLI script targets in both inline code and fenced bash blocks
+  const sampleMarkdown = [
+    '# Sample Skill Doc',
+    'Run inline: `node scripts/integrations/jira/missing_inline.js --issue PROJ-1`',
+    'Reference inline file: `scripts/integrations/jira/missing_file.js` and `.env.example`',
+    '```bash',
+    'node scripts/browser-mode.mjs status',
+    'node scripts/missing_fenced_script.mjs --verify',
+    '```',
+  ].join('\n');
+
+  const pointerRes = resolveContextPointers(sampleMarkdown, {
+    sourceFile: path.join(REPO_ROOT, '.claude', 'skills', 'skills-jira-integration', 'SKILL.md'),
+    repoRoot: REPO_ROOT,
+  });
+
+  const brokenTargets = pointerRes.brokenPointers.map((b) => b.rawTarget).sort();
+  assert.ok(
+    brokenTargets.includes('scripts/integrations/jira/missing_inline.js'),
+    'resolveContextPointers must detect missing CLI script inside inline code span'
+  );
+  assert.ok(
+    brokenTargets.includes('scripts/integrations/jira/missing_file.js'),
+    'resolveContextPointers must detect missing scripts/integrations/*.js inline path'
+  );
+  assert.ok(
+    brokenTargets.includes('scripts/missing_fenced_script.mjs'),
+    'resolveContextPointers must detect missing CLI script inside fenced code block'
+  );
+
+  // 2. Verify canonical .env.example exists at repo root and documents all required keys
+  const envExamplePath = path.join(REPO_ROOT, '.env.example');
+  assert.ok(fs.existsSync(envExamplePath), 'Root .env.example must exist');
+  const envExampleContent = fs.readFileSync(envExamplePath, 'utf8');
+  for (const requiredKey of [
+    'BASE_URL',
+    'ADMIN_EMAIL',
+    'ADMIN_PASSWORD',
+    'HEADLESS',
+    'VIDEO_MODE',
+    'WORKERS',
+    'JIRA_BASE_URL',
+    'JIRA_EMAIL',
+    'JIRA_API_TOKEN',
+    'JIRA_PAT',
+    'JIRA_PROJECT_KEY',
+    'XRAY_PLATFORM',
+    'XRAY_CLIENT_ID',
+    'XRAY_CLIENT_SECRET',
+  ]) {
+    assert.match(
+      envExampleContent,
+      new RegExp(`^#?\\s*${requiredKey}=`, 'm'),
+      `.env.example must document ${requiredKey}`
+    );
+  }
+});
+
+test('Seam 11: Zero-Dependency Jira & Xray Integration Suite (utils, jira_fetcher, xray_auth, xray_importer) verified in-process', async () => {
+  const utilsMod = await import('./integrations/jira/utils.js');
+  const fetcherMod = await import('./integrations/jira/jira_fetcher.js');
+  const authMod = await import('./integrations/jira/xray_auth.js');
+  const importerMod = await import('./integrations/jira/xray_importer.js');
+
+  // 1. Verify .env parser, CLI arg parser, and Jira Cloud vs Server Auth headers
+  const parsedEnv = utilsMod.parseEnvContent(
+    [
+      '# Comment line',
+      'JIRA_BASE_URL="https://acme.atlassian.net/"',
+      "export JIRA_EMAIL='qa@acme.com'",
+      'JIRA_API_TOKEN=secret_token_123',
+    ].join('\n')
+  );
+  assert.equal(parsedEnv.JIRA_BASE_URL, 'https://acme.atlassian.net/');
+  assert.equal(parsedEnv.JIRA_EMAIL, 'qa@acme.com');
+  assert.equal(parsedEnv.JIRA_API_TOKEN, 'secret_token_123');
+
+  const cloudAuth = utilsMod.buildJiraAuthHeaders(parsedEnv);
+  assert.equal(cloudAuth.baseUrl, 'https://acme.atlassian.net');
+  assert.equal(
+    cloudAuth.headers.Authorization,
+    `Basic ${Buffer.from('qa@acme.com:secret_token_123').toString('base64')}`
+  );
+
+  const serverAuth = utilsMod.buildJiraAuthHeaders({
+    JIRA_BASE_URL: 'https://jira.internal.corp',
+    JIRA_PAT: 'pat_xyz_999',
+  });
+  assert.equal(serverAuth.headers.Authorization, 'Bearer pat_xyz_999');
+
+  const cliArgs = utilsMod.parseCliArgs([
+    '--issue',
+    'PROJ-123',
+    '--format=md',
+    '--verify',
+    '--max',
+    '20',
+  ]);
+  assert.equal(cliArgs.issue, 'PROJ-123');
+  assert.equal(cliArgs.format, 'md');
+  assert.equal(cliArgs.verify, true);
+  assert.equal(cliArgs.max, '20');
+
+  // 2. Verify recursive ADF-to-Markdown conversion
+  const sampleAdf = {
+    type: 'doc',
+    version: 1,
+    content: [
+      {
+        type: 'heading',
+        attrs: { level: 2 },
+        content: [{ type: 'text', text: 'Acceptance Criteria' }],
+      },
+      {
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: 'User must login with ' },
+          { type: 'text', text: 'valid email', marks: [{ type: 'strong' }] },
+          { type: 'text', text: ' and ' },
+          { type: 'text', text: 'OTP', marks: [{ type: 'code' }] },
+          {
+            type: 'text',
+            text: ' spec link',
+            marks: [{ type: 'link', attrs: { href: 'https://example.com/spec' } }],
+          },
+        ],
+      },
+      {
+        type: 'bulletList',
+        content: [
+          {
+            type: 'listItem',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Lock after 5 failures' }] }],
+          },
+          {
+            type: 'listItem',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Audit log recorded' }] }],
+          },
+        ],
+      },
+      {
+        type: 'table',
+        content: [
+          {
+            type: 'tableRow',
+            content: [
+              { type: 'tableHeader', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Field' }] }] },
+              { type: 'tableHeader', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Rule' }] }] },
+            ],
+          },
+          {
+            type: 'tableRow',
+            content: [
+              { type: 'tableCell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Email' }] }] },
+              { type: 'tableCell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Required' }] }] },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  const mdFromAdf = utilsMod.adfToMarkdown(sampleAdf);
+  assert.match(mdFromAdf, /## Acceptance Criteria/);
+  assert.match(mdFromAdf, /\*\*valid email\*\*/);
+  assert.match(mdFromAdf, /`OTP`/);
+  assert.match(mdFromAdf, /\[spec link\]\(https:\/\/example\.com\/spec\)/);
+  assert.match(mdFromAdf, /- Lock after 5 failures/);
+  assert.match(mdFromAdf, /\| Field \| Rule \|/);
+
+  // 3. Verify Jira Fetcher with mock fetchImpl (single issue + JQL pagination + file output)
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jira-suite-test-'));
+  try {
+    const mockFetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.includes('/rest/api/3/issue/PROJ-123')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            key: 'PROJ-123',
+            fields: {
+              summary: 'Login MFA Enforcement',
+              issuetype: { name: 'Story' },
+              status: { name: 'In Progress' },
+              priority: { name: 'High' },
+              assignee: { displayName: 'QA Lead' },
+              labels: ['security', 'auth'],
+              parent: { key: 'PROJ-10' },
+              description: sampleAdf,
+              comment: {
+                comments: [
+                  {
+                    author: { displayName: 'PM' },
+                    created: '2026-10-01T10:00:00.000Z',
+                    body: 'Confirmed timeout is 15 minutes.',
+                  },
+                ],
+              },
+            },
+          }),
+        };
+      }
+      if (u.includes('/rest/api/3/search')) {
+        const parsedUrl = new URL(u);
+        const startAt = Number(parsedUrl.searchParams.get('startAt') || 0);
+        const allIssues = [
+          { key: 'PROJ-101', fields: { summary: 'Story 1', issuetype: { name: 'Story' }, status: { name: 'To Do' }, description: 'Desc 1' } },
+          { key: 'PROJ-102', fields: { summary: 'Story 2', issuetype: { name: 'Story' }, status: { name: 'Done' }, description: 'Desc 2' } },
+        ];
+        const slice = allIssues.slice(startAt, startAt + 1);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            startAt,
+            maxResults: 1,
+            total: 2,
+            issues: slice,
+          }),
+        };
+      }
+      if (u.includes('/rest/api/2/myself')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ name: 'qa_server_user' }),
+        };
+      }
+      if (u.includes('xray.cloud.getxray.app/api/v2/authenticate')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '"xray_jwt_token_abc"',
+          json: async () => 'xray_jwt_token_abc',
+        };
+      }
+      if (u.includes('xray.cloud.getxray.app/api/v2/import/execution')) {
+        const postedBody = JSON.parse(init.body);
+        assert.equal(postedBody.testExecutionKey, 'PROJ-900');
+        assert.equal(postedBody.tests.length, 3);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ key: 'PROJ-900', id: '10099' }),
+        };
+      }
+      throw new Error(`Unexpected URL in mockFetch: ${u}`);
+    };
+
+    assert.equal(
+      fetcherMod.buildJqlFromOptions({ issue: 'PROJ-123' }),
+      'key = "PROJ-123"',
+      'buildJqlFromOptions must support { issue } option'
+    );
+
+    const singleRes = await fetcherMod.fetchJiraIssues({
+      issue: 'PROJ-123',
+      format: 'md',
+      outputDir: tmpDir,
+      env: parsedEnv,
+      fetchImpl: mockFetch,
+    });
+    assert.equal(singleRes.issues.length, 1);
+    assert.equal(singleRes.issues[0].key, 'PROJ-123');
+    assert.match(singleRes.markdown, /# \[PROJ-123\] Login MFA Enforcement/);
+    assert.match(singleRes.markdown, /Confirmed timeout is 15 minutes/);
+    assert.ok(fs.existsSync(singleRes.outputPath), 'jira_fetcher must write Markdown output file');
+
+    const epicRes = await fetcherMod.fetchJiraIssues({
+      epic: 'PROJ-10',
+      maxResults: 5,
+      pageSize: 1,
+      env: parsedEnv,
+      fetchImpl: mockFetch,
+    });
+    assert.equal(epicRes.issues.length, 2, 'fetchAllJiraPages must paginate across startAt=0 and startAt=1');
+
+    // 4. Verify Xray Cloud & Server/DC Auth
+    const xrayAuthRes = await authMod.authenticateXray({
+      env: {
+        ...parsedEnv,
+        XRAY_PLATFORM: 'cloud',
+        XRAY_CLIENT_ID: 'cid_1',
+        XRAY_CLIENT_SECRET: 'csec_1',
+      },
+      fetchImpl: mockFetch,
+    });
+    assert.equal(xrayAuthRes.platform, 'cloud');
+    assert.equal(xrayAuthRes.token, 'xray_jwt_token_abc');
+    assert.equal(xrayAuthRes.headers.Authorization, 'Bearer xray_jwt_token_abc');
+
+    const xrayServerAuthRes = await authMod.authenticateXray({
+      env: {
+        JIRA_BASE_URL: 'https://jira.internal.corp',
+        JIRA_PAT: 'pat_xyz_999',
+        XRAY_PLATFORM: 'server',
+      },
+      fetchImpl: mockFetch,
+    });
+    assert.equal(xrayServerAuthRes.platform, 'server');
+    assert.equal(xrayServerAuthRes.baseUrl, 'https://jira.internal.corp/rest/raven/2.0/api');
+    assert.equal(xrayServerAuthRes.headers.Authorization, 'Bearer pat_xyz_999');
+
+    // 5. Verify Playwright JSON -> Xray and JUnit XML -> Xray conversions + importToXray
+    const pwReportPath = path.join(tmpDir, 'pw-results.json');
+    const samplePwReport = {
+      suites: [
+        {
+          title: 'login.spec.ts',
+          specs: [
+            {
+              title: '[PROJ-201] Valid login redirects to dashboard',
+              tests: [{ results: [{ status: 'passed', duration: 1250 }] }],
+            },
+            {
+              title: '[PROJ-202] Invalid password shows error banner',
+              tests: [
+                {
+                  results: [
+                    {
+                      status: 'failed',
+                      duration: 2100,
+                      error: { message: 'Expected error alert to be visible' },
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              title: '[PROJ-203] Remember me token persistence',
+              tests: [{ results: [{ status: 'skipped', duration: 0 }] }],
+            },
+            {
+              title: 'Unmapped helper smoke test without Jira key',
+              tests: [{ results: [{ status: 'passed', duration: 300 }] }],
+            },
+          ],
+        },
+      ],
+    };
+    fs.writeFileSync(pwReportPath, JSON.stringify(samplePwReport, null, 2), 'utf8');
+
+    const importRes = await importerMod.importToXray({
+      format: 'playwright',
+      filePath: pwReportPath,
+      projectKey: 'PROJ',
+      testExecKey: 'PROJ-900',
+      env: {
+        ...parsedEnv,
+        XRAY_PLATFORM: 'cloud',
+        XRAY_CLIENT_ID: 'cid_1',
+        XRAY_CLIENT_SECRET: 'csec_1',
+      },
+      fetchImpl: mockFetch,
+    });
+    assert.equal(importRes.testExecKey, 'PROJ-900');
+    assert.equal(importRes.stats.total, 3);
+    assert.equal(importRes.stats.passed, 1);
+    assert.equal(importRes.stats.failed, 1);
+    assert.equal(importRes.stats.todo, 1);
+    assert.equal(importRes.unmappedTests.length, 1);
+
+    const sampleJunitXml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<testsuites>',
+      '  <testsuite name="LoginSuite" tests="3" failures="1" skipped="1">',
+      '    <testcase classname="auth.LoginTest" name="[PROJ-301] Login success" time="1.2"/>',
+      '    <testcase classname="auth.LoginTest" name="[PROJ-302] Login locked" time="0.8">',
+      '      <failure message="Expected HTTP 423">AssertionError at line 42</failure>',
+      '    </testcase>',
+      '    <testcase classname="auth.LoginTest" name="[PROJ-303] Login SSO" time="0.0">',
+      '      <skipped/>',
+      '    </testcase>',
+      '  </testsuite>',
+      '</testsuites>',
+    ].join('\n');
+
+    const junitConverted = importerMod.convertJunitXmlToXray(sampleJunitXml, {
+      projectKey: 'PROJ',
+      platform: 'server',
+    });
+    assert.equal(junitConverted.payload.tests.length, 3);
+    assert.deepEqual(
+      junitConverted.payload.tests.map((t) => `${t.testKey}:${t.status}`),
+      ['PROJ-301:PASS', 'PROJ-302:FAIL', 'PROJ-303:TODO']
+    );
+
+    // 6. Verify markdownToAdf() and jira_bug_creator.js (Cloud v3 ADF, Server v2, attachment upload, local Jira Key write-back)
+    const bugCreatorMod = await import('./integrations/jira/jira_bug_creator.js');
+    assert.equal(typeof utilsMod.markdownToAdf, 'function', 'utils.js must export markdownToAdf');
+    const convertedAdf = utilsMod.markdownToAdf(
+      [
+        '## Steps to Reproduce',
+        '1. Open **Login** page with `admin`',
+        '- Verify error banner',
+      ].join('\n')
+    );
+    assert.equal(convertedAdf.type, 'doc');
+    assert.equal(convertedAdf.version, 1);
+    assert.ok(
+      convertedAdf.content.some((n) => n.type === 'heading'),
+      'markdownToAdf must convert ## headings'
+    );
+    assert.ok(
+      convertedAdf.content.some((n) => n.type === 'orderedList'),
+      'markdownToAdf must convert numbered lists'
+    );
+    assert.ok(
+      convertedAdf.content.some((n) => n.type === 'bulletList'),
+      'markdownToAdf must convert bullet lists'
+    );
+
+    const evidenceDir = path.join(tmpDir, 'docs', 'executions', 'login', 'run_1', 'evidence');
+    const bugDir = path.join(tmpDir, 'docs', 'bugs', 'login');
+    fs.mkdirSync(evidenceDir, { recursive: true });
+    fs.mkdirSync(bugDir, { recursive: true });
+    const imgPath = path.join(evidenceDir, 'CRM_LOGIN_TC_016_step3_fail.png');
+    fs.writeFileSync(imgPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const bugFilePath = path.join(bugDir, 'BUG_login_1787226514_TC016.md');
+    const bugsReadmePath = path.join(tmpDir, 'docs', 'bugs', 'README.md');
+    fs.writeFileSync(
+      bugsReadmePath,
+      [
+        '# Danh mục Bug',
+        '| Mã bug | Module | Tiêu đề ngắn | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+        '|---|---|---|---|---|---|---|---|',
+        '| [BUG_login_1787226514_TC016](login/BUG_login_1787226514_TC016.md) | login | Email cleared after failed login | 🟠 Major | P2 | 🆕 Đang mở | CRM_LOGIN_TC_016 | 2026-08-20 |',
+      ].join('\n'),
+      'utf8'
+    );
+    const sampleBugMd = [
+      '# [BUG] Email cleared after failed login',
+      '',
+      '## Thông tin chung',
+      '- **ID:** BUG_login_1787226514_TC016',
+      '- **Severity:** 🟠 Major',
+      '- **Priority:** P2',
+      '- **Môi trường:** Staging · Chrome Headless 1920x1080',
+      '- **Build / Version:** v2.3.4',
+      '- **Test case liên quan:** CRM_LOGIN_TC_016',
+      '- **REQ ID liên quan:** REQ-LOGIN-16',
+      '- **Ngày phát hiện:** 2026-08-20',
+      '- **Trạng thái:** 🆕 Open',
+      '',
+      '## Steps to Reproduce',
+      '1. Navigate to `/admin/authentication`',
+      '2. Submit invalid password',
+      '',
+      '## Expected Result',
+      'Email input retains entered value',
+      '',
+      '## Actual Result',
+      'Email input is cleared',
+      '',
+      '## Evidence',
+      '- **Screenshot:** [CRM_LOGIN_TC_016_step3_fail.png](../../executions/login/run_1/evidence/CRM_LOGIN_TC_016_step3_fail.png)',
+      '- **Duplicate ref:** ![dup](../../executions/login/run_1/evidence/CRM_LOGIN_TC_016_step3_fail.png)',
+      '- **Missing ref:** [missing.png](../../executions/login/run_1/evidence/missing.png)',
+      '- **Remote ref:** [remote.png](https://example.com/remote.png)',
+    ].join('\n');
+    fs.writeFileSync(bugFilePath, sampleBugMd, 'utf8');
+
+    const extractedEvidence = bugCreatorMod.extractEvidencePaths(sampleBugMd, bugFilePath);
+    assert.equal(extractedEvidence.length, 1, 'extractEvidencePaths must deduplicate identical resolved paths and ignore missing/remote links');
+    assert.equal(extractedEvidence[0], imgPath);
+
+    const parsedSampleBug = bugCreatorMod.parseBugMarkdown(sampleBugMd, 'BUG_login_1787226514_TC016.md');
+    const extractedFromParsed = bugCreatorMod.extractEvidencePaths(parsedSampleBug, bugFilePath);
+    assert.equal(extractedFromParsed.length, 1);
+    assert.equal(extractedFromParsed[0], imgPath);
+
+    const twoArgPayload = bugCreatorMod.buildJiraBugPayload(parsedSampleBug, {
+      projectKey: 'PROJ',
+      apiVersion: '2',
+      severityField: 'customfield_10042',
+    });
+    assert.equal(twoArgPayload.fields.project.key, 'PROJ');
+    assert.match(twoArgPayload.fields.description, /## Evidence/);
+    assert.deepEqual(twoArgPayload.fields.customfield_10042, { value: 'Major' });
+
+    let attachmentUploaded = false;
+    const bugMockFetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.includes('/rest/api/3/issue') && !u.includes('/attachments')) {
+        const body = JSON.parse(init.body);
+        assert.equal(body.fields.project.key, 'PROJ');
+        assert.equal(body.fields.issuetype.name, 'Bug');
+        assert.equal(body.fields.description.type, 'doc');
+        assert.deepEqual(body.fields.customfield_10042, { value: 'Major' });
+        assert.ok(body.fields.labels.includes('CRM_LOGIN_TC_016'));
+        assert.ok(body.fields.labels.includes('REQ-LOGIN-16'));
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ id: '10500', key: 'PROJ-555' }),
+        };
+      }
+      if (u.includes('/rest/api/3/issue/PROJ-555/attachments')) {
+        assert.equal(init.headers['X-Atlassian-Token'], 'no-check');
+        attachmentUploaded = true;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ id: '9001', filename: 'CRM_LOGIN_TC_016_step3_fail.png' }],
+        };
+      }
+      if (u.includes('/rest/api/2/issue')) {
+        const body = JSON.parse(init.body);
+        assert.equal(typeof body.fields.description, 'string');
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ id: '10501', key: 'PROJ-556' }),
+        };
+      }
+      throw new Error(`Unexpected URL in bugMockFetch: ${u}`);
+    };
+
+    const createdCloud = await bugCreatorMod.pushBugToJira({
+      filePath: bugFilePath,
+      projectKey: 'PROJ',
+      attach: true,
+      update: true,
+      env: { ...parsedEnv, JIRA_SEVERITY_FIELD: 'customfield_10042' },
+      fetchImpl: bugMockFetch,
+    });
+    assert.equal(createdCloud.issueKey, 'PROJ-555');
+    assert.equal(createdCloud.key, 'PROJ-555');
+    assert.equal(attachmentUploaded, true, 'pushBugToJira must upload existing evidence attachments when attach=true');
+    const updatedBugMd = fs.readFileSync(bugFilePath, 'utf8');
+    assert.match(updatedBugMd, /- \*\*Jira Issue:\*\* PROJ-555/, 'pushBugToJira must write back - **Jira Issue:** PROJ-555 when update=true');
+
+    const updatedReadmeMd = fs.readFileSync(bugsReadmePath, 'utf8');
+    assert.match(updatedReadmeMd, /PROJ-555/, 'pushBugToJira must write back Jira Issue Key to docs/bugs/README.md');
+    const updatedReadmeTables = parseMarkdownTables(updatedReadmeMd);
+    assert.equal(
+      updatedReadmeTables[0].rows[0].length,
+      8,
+      'docs/bugs/README.md table row must remain strictly 8 columns after Jira Key write-back'
+    );
+    const parsedUpdatedCatalog = parseBugIndex(updatedReadmeMd, 'README.md');
+    assert.equal(parsedUpdatedCatalog.rows.length, 1);
+    assert.match(parsedUpdatedCatalog.rows[0].statusRaw, /PROJ-555/);
+
+    const createdServer = await bugCreatorMod.pushBugToJira({
+      filePath: bugFilePath,
+      projectKey: 'PROJ',
+      attach: false,
+      update: false,
+      env: {
+        JIRA_BASE_URL: 'https://jira.internal.corp',
+        JIRA_PAT: 'pat_xyz_999',
+      },
+      fetchImpl: bugMockFetch,
+    });
+    assert.equal(createdServer.issueKey, 'PROJ-556');
+
+    // Also verify pushBugToJira positional signature against an in-process http.createServer mock HTTP server
+    const bugFilePathHttp = path.join(bugDir, 'BUG_login_1787226515_TC017.md');
+    fs.writeFileSync(
+      bugFilePathHttp,
+      sampleBugMd.replace('BUG_login_1787226514_TC016', 'BUG_login_1787226515_TC017'),
+      'utf8'
+    );
+    let httpServerAttachmentHeader = '';
+    const mockHttpServer = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        res.setHeader('Content-Type', 'application/json');
+        if (req.method === 'POST' && req.url === '/rest/api/2/issue') {
+          res.statusCode = 201;
+          res.end(JSON.stringify({ id: '10777', key: 'PROJ-777' }));
+          return;
+        }
+        if (req.method === 'POST' && req.url === '/rest/api/2/issue/PROJ-777/attachments') {
+          httpServerAttachmentHeader = String(req.headers['x-atlassian-token'] || '');
+          res.statusCode = 200;
+          res.end(JSON.stringify([{ id: '9002', filename: 'CRM_LOGIN_TC_016_step3_fail.png' }]));
+          return;
+        }
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: 'Not Found' }));
+      });
+    });
+    await new Promise((resolve) => mockHttpServer.listen(0, '127.0.0.1', resolve));
+    try {
+      const addr = mockHttpServer.address();
+      const baseUrl = `http://127.0.0.1:${addr.port}`;
+      const httpRes = await bugCreatorMod.pushBugToJira(bugFilePathHttp, 'PROJ', true, {
+        env: {
+          JIRA_BASE_URL: baseUrl,
+          JIRA_PAT: 'pat_http_test',
+          JIRA_SEVERITY_FIELD: 'customfield_10042',
+        },
+      });
+      assert.equal(httpRes.issueKey, 'PROJ-777');
+      assert.equal(httpRes.attachments.length, 1);
+      assert.equal(httpServerAttachmentHeader, 'no-check');
+      assert.match(fs.readFileSync(bugFilePathHttp, 'utf8'), /- \*\*Jira Issue:\*\* PROJ-777/);
+    } finally {
+      await new Promise((resolve) => mockHttpServer.close(resolve));
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('Seam 12: Layer 3 Automation Script Traceability Scanner & --out in scripts/validate-docs.mjs', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rtm-layer3-test-'));
+  try {
+    const reqDir = path.join(tmpRoot, 'docs', 'requirements', 'auth');
+    const tcDir = path.join(tmpRoot, 'docs', 'testcases', 'auth');
+    const testsDir = path.join(tmpRoot, 'tests', 'auth');
+    fs.mkdirSync(reqDir, { recursive: true });
+    fs.mkdirSync(tcDir, { recursive: true });
+    fs.mkdirSync(testsDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(reqDir, 'requirements_auth.md'),
+      [
+        '# Requirements Auth',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-AUTH-01 | Valid Login | Desc | AC | 🟢 | — | DOM |',
+        '| REQ-AUTH-02 | Lockout Policy | Desc | AC | 🟢 | — | DOM |',
+        '| REQ-AUTH-03 | Remember Me | Desc | AC | 🟢 | — | DOM |',
+        '| REQ-AUTH-04 | SSO Login | Desc | AC | 🟢 | — | DOM |',
+        '| REQ-AUTH-05 | Legacy LDAP | Desc | AC | ⚪ Out of scope | — | DOM |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tcDir, 'test_cases_auth.md'),
+      [
+        '# Test Cases Auth',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_AUTH_TC_001 | REQ-AUTH-01 | AUTH | High | Valid admin login | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+        '| CRM_AUTH_TC_002 | REQ-AUTH-01 | AUTH | High | Valid staff login | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+        '| CRM_AUTH_TC_003 | REQ-AUTH-02 | AUTH | High | Lock after 5 tries | None | 1. Go | None | 1. Ok | Critical | Yes | UI | @Security |',
+        '| CRM_AUTH_TC_004 | REQ-AUTH-02 | AUTH | Medium | Unlock after 15m | None | 1. Go | None | 1. Ok | Medium | Yes | UI | @Security |',
+        '| CRM_AUTH_TC_005 | REQ-AUTH-03 | AUTH | Low | Remember me cookie | None | 1. Go | None | 1. Ok | Low | Yes | UI | @Regression |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(testsDir, 'login.spec.ts'),
+      [
+        "import { test } from '@playwright/test';",
+        "test('[CRM_AUTH_TC_001] Valid admin login', async () => {});",
+        "test('[CRM_AUTH_TC_002] Valid staff login', async () => {});",
+        "test('[CRM_AUTH_TC_003] Lock after 5 tries', async () => {});",
+        "test('[CRM_AUTH_TC_999] Orphan automation test', async () => {});",
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tmpRoot, 'docs', 'requirements', 'README.md'),
+      [
+        '# Danh mục Requirements',
+        '## 1. Bảng danh mục module',
+        '| Module | Prefix | Trạng thái recon | Mức phủ tài liệu | Tài liệu | REQ đã dùng | Mã kế tiếp | AMB treo | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| Xác thực | `AUTH` | ✅ Đã có tài liệu | 🟩 Đầy đủ | [auth/requirements_auth.md](auth/requirements_auth.md) | `REQ-AUTH-01` → `REQ-AUTH-05` | `REQ-AUTH-06` | — | 2026-08-14 |',
+        '| Thanh toán | `BILL` | ⬜ Chưa khảo sát | ⬜ Trắng | — | — | `REQ-BILL-01` | — | 2026-08-14 |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const rtm = computeTraceabilityReport(tmpRoot);
+    const rowByReq = new Map(rtm.rows.map((r) => [r.reqId, r]));
+
+    assert.equal(rowByReq.get('REQ-AUTH-01').status, '✅ Full');
+    assert.equal(rowByReq.get('REQ-AUTH-01').automation, 'login.spec.ts');
+
+    assert.equal(rowByReq.get('REQ-AUTH-02').status, '🟣 Partial');
+    assert.equal(rowByReq.get('REQ-AUTH-02').automation, 'login.spec.ts (1/2)');
+
+    assert.equal(rowByReq.get('REQ-AUTH-03').status, '🟡 Manual only');
+    assert.equal(rowByReq.get('REQ-AUTH-03').automation, '—');
+
+    assert.equal(rowByReq.get('REQ-AUTH-04').status, '🔴 Uncovered');
+    assert.equal(rowByReq.get('REQ-AUTH-05').status, '⚪ Out of scope');
+
+    assert.equal(rtm.summary.automatedTcs, 3);
+    assert.deepEqual(
+      rtm.unautomatedTcs.map((t) => t.id),
+      ['CRM_AUTH_TC_004', 'CRM_AUTH_TC_005'],
+      'unautomatedTcs must list only Automatable=Yes TCs not yet automated'
+    );
+    assert.deepEqual(
+      rtm.orphanScripts.map((o) => o.tcId),
+      ['CRM_AUTH_TC_999'],
+      'orphanScripts must detect TC IDs in automation scripts that do not exist in test_cases_*.md'
+    );
+    assert.ok(
+      rtm.undocumentedModules && rtm.undocumentedModules.length >= 1,
+      'computeTraceabilityReport must collect undocumented modules from Module Catalog'
+    );
+    assert.match(rtm.markdown, /## 🔴 Requirements chưa được cover/);
+    assert.match(rtm.markdown, /## ⬛ Module chưa có tài liệu/);
+
+    // Verify execution-viewer parseExecutionReport / parseRtm compatibility across all 6 RTM sections
+    const parsedForViewer = parseExecutionReport(rtm.markdown, 'traceability_matrix.md');
+    assert.equal(parsedForViewer.kind, 'rtm');
+    const viewerRowByReq = new Map(parsedForViewer.rtm.rows.map((r) => [r.req, r]));
+    assert.equal(viewerRowByReq.get('REQ-AUTH-01').status, 'FULL');
+    assert.equal(viewerRowByReq.get('REQ-AUTH-02').status, 'PARTIALCOV');
+    assert.equal(viewerRowByReq.get('REQ-AUTH-03').status, 'MANUAL');
+    assert.equal(viewerRowByReq.get('REQ-AUTH-04').status, 'NOTCOVERED');
+    assert.equal(
+      viewerRowByReq.get('REQ-AUTH-05').status,
+      'OUTOFSCOPE',
+      'parseRtm must classify ⚪ Out of scope rows as OUTOFSCOPE instead of NOTCOVERED'
+    );
+    assert.ok(
+      viewerRowByReq.get('REQ-AUTH-04').suggest && viewerRowByReq.get('REQ-AUTH-04').suggest.length > 0,
+      'parseRtm must populate suggest for uncovered REQ from ## 🔴 Requirements chưa được cover'
+    );
+    assert.deepEqual(
+      parsedForViewer.rtm.notAuto.map((t) => t.id),
+      ['CRM_AUTH_TC_004', 'CRM_AUTH_TC_005'],
+      'parseRtm must parse unautomatedTcs table from report.markdown'
+    );
+    assert.deepEqual(
+      parsedForViewer.rtm.orphans.map((o) => o.test),
+      ['CRM_AUTH_TC_999'],
+      'parseRtm must parse orphanScripts table from report.markdown'
+    );
+    assert.ok(
+      parsedForViewer.rtm.undocumented.length >= 1,
+      'parseRtm must parse undocumented modules table from ## ⬛ Module chưa có tài liệu'
+    );
+
+    // Verify CLI --out and --module=<slug> / --root=<dir> equals-syntax flags write traceability_matrix.md
+    const outFile = path.join(tmpRoot, 'docs', 'traceability_matrix.md');
+    execFileSync(
+      process.execPath,
+      [
+        path.join(REPO_ROOT, 'scripts', 'validate-docs.mjs'),
+        '--rtm',
+        `--root=${tmpRoot}`,
+        '--module=auth',
+        `--out=${outFile}`,
+      ],
+      { encoding: 'utf8' }
+    );
+    assert.ok(fs.existsSync(outFile), 'validate-docs.mjs --rtm --out must write output file');
+    assert.match(fs.readFileSync(outFile, 'utf8'), /login\.spec\.ts \(1\/2\)/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('Seam 13: Deterministic ISO/IEC/IEEE 29119-3 Test Completion Summary & 7 Exit Criteria Engine (--summary)', () => {
+  assert.equal(typeof computeTestSummaryReport, 'function', 'validate-docs.mjs must export computeTestSummaryReport');
+
+  // 1. Evaluate real repository docs/ summary (has 1 Critical open bug BUG_login_1785678750_TC039 -> NO_GO)
+  const realSummary = computeTestSummaryReport(REPO_ROOT, { module: 'login', milestone: 'Sprint 12' });
+  assert.equal(realSummary.verdict, 'NO_GO', 'login module has an open Critical bug and must evaluate to NO_GO');
+  assert.equal(realSummary.exitCriteria.length, 7, 'Must evaluate all 7 default Exit Criteria');
+  assert.equal(realSummary.defects.openCritical, 1);
+  assert.equal(realSummary.defects.totalOpen, 6);
+  assert.equal(realSummary.execution.pass, 32);
+  assert.equal(realSummary.execution.fail, 6);
+  assert.equal(realSummary.execution.blocked, 2);
+  assert.equal(realSummary.execution.skipped, 1);
+  assert.equal(realSummary.execution.dirty, 0);
+  assert.equal(realSummary.execution.passRate, 80, 'Pass rate excluding SKIPPED must be 32/40 = 80%');
+  assert.match(realSummary.markdown, /ISO\/IEC\/IEEE 29119-3/);
+  assert.match(realSummary.markdown, /🔴 NO-GO/);
+  assert.match(realSummary.markdown, /## 2\. Vùng CHƯA Được Kiểm Thử & Nợ Kiểm Thử/);
+  assert.match(realSummary.markdown, /## 3\. Đối Chiếu Tiêu Chí Exit/);
+  assert.match(realSummary.markdown, /### Danh sách Bug đang mở/);
+
+  // 2. Evaluate synthetic green project (all 7 Exit Criteria met -> GO, with run_90 FAIL and run_100 PASS to verify numerical run sorting) and CLI --summary --out
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'summary-go-test-'));
+  try {
+    const reqDir = path.join(tmpRoot, 'docs', 'requirements', 'auth');
+    const tcDir = path.join(tmpRoot, 'docs', 'testcases', 'auth');
+    const execOldDir = path.join(tmpRoot, 'docs', 'executions', 'auth', 'run_90');
+    const execDir = path.join(tmpRoot, 'docs', 'executions', 'auth', 'run_100');
+    fs.mkdirSync(reqDir, { recursive: true });
+    fs.mkdirSync(tcDir, { recursive: true });
+    fs.mkdirSync(execOldDir, { recursive: true });
+    fs.mkdirSync(execDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(reqDir, 'requirements_auth.md'),
+      [
+        '# Requirements Auth',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-AUTH-01 | Valid Login | Desc | AC | 🟢 | — | DOM |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tcDir, 'test_cases_auth.md'),
+      [
+        '# Test Cases Auth',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_AUTH_TC_001 | REQ-AUTH-01 | AUTH | High | Valid Login | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(execOldDir, 'execution_report.md'),
+      [
+        '# Execution Report — Auth',
+        '| Thông tin | Nội dung |',
+        '|---|---|',
+        '| Run ID | run_90 |',
+        '## 2. Kết quả từng TC',
+        '| TC ID | Test Scenario | Kết quả | Bước fail | Ghi chú |',
+        '|---|---|---|---|---|',
+        '| CRM_AUTH_TC_001 | Valid Login | ❌ FAIL | 1 | Old failure |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(execDir, 'execution_report.md'),
+      [
+        '# Execution Report — Auth',
+        '| Thông tin | Nội dung |',
+        '|---|---|',
+        '| Run ID | run_100 |',
+        '## 2. Kết quả từng TC',
+        '| TC ID | Test Scenario | Kết quả | Bước fail | Ghi chú |',
+        '|---|---|---|---|---|',
+        '| CRM_AUTH_TC_001 | Valid Login | ✅ PASS | — | — |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const goSummary = computeTestSummaryReport(tmpRoot, { milestone: 'Release v1.0' });
+    assert.equal(goSummary.verdict, 'GO', 'Numerical run sort must pick run_100 over run_90');
+    assert.equal(goSummary.passedCriteriaCount, 7);
+    assert.match(goSummary.markdown, /🟢 GO — Đạt 7\/7 tiêu chí exit/);
+
+    const outSummaryFile = path.join(tmpRoot, 'docs', 'test_summary_report.md');
+    execFileSync(
+      process.execPath,
+      [
+        path.join(REPO_ROOT, 'scripts', 'validate-docs.mjs'),
+        '--summary',
+        `--root=${tmpRoot}`,
+        `--out=${outSummaryFile}`,
+      ],
+      { encoding: 'utf8' }
+    );
+    assert.ok(fs.existsSync(outSummaryFile), 'validate-docs.mjs --summary --out must write summary report file');
+    assert.match(fs.readFileSync(outSummaryFile, 'utf8'), /🟢 GO — Đạt 7\/7 tiêu chí exit/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+
+
+
 

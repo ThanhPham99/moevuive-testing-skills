@@ -5,6 +5,27 @@
 
 ---
 
+## 0. Cấu trúc thư mục chuẩn — Playwright + TypeScript
+
+```text
+project-root/
+├── playwright.config.ts          # Playwright configuration
+├── package.json                  # Dependencies + npm scripts
+├── .env.example                  # Environment template (KHÔNG chứa credentials thật)
+├── .gitignore
+├── README.md
+├── src/
+│   ├── pages/                    # Page Object classes (base.page.ts, login.page.ts, ...)
+│   ├── fixtures/                 # Custom fixtures (auth.fixture.ts, base.fixture.ts)
+│   ├── utils/                    # Helpers & utilities (test-data.ts, env.config.ts)
+│   └── tests/                    # Test specs grouped by feature (auth/, dashboard/)
+├── reports/                      # allure-results/, allure-report/, allure-report-single/, html/, logs/, screenshots/, videos/
+├── test-data/                    # External test data (JSON/YAML)
+└── .github/workflows/playwright.yml
+```
+
+---
+
 ## 1. Environment Configuration — `src/utils/env.config.ts`
 
 ```typescript

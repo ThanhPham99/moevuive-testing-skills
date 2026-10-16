@@ -811,6 +811,7 @@ export const RTM_ST = {
   PARTIALCOV: 'Automate một phần',
   MANUAL: 'Mới có TC thủ công',
   NOTCOVERED: 'Chưa có TC',
+  OUTOFSCOPE: 'Ngoài phạm vi',
 };
 
 export const GRP_LABEL = {
@@ -872,6 +873,8 @@ export function parseRtm(tables, fileName, title) {
         const m = auto.match(/\((\d+)\s*\/\s*(\d+)\)/);
         const nAuto = auto ? (m ? +m[1] : tcs.length) : 0;
         const nTc = m ? +m[2] : tcs.length;
+        const declared = iSt >= 0 ? stripMd(r[iSt]) : '';
+        const isOutOfScope = /out\s*of\s*scope|ngoài\s*phạm\s*vi/i.test(declared);
         rows.push({
           req,
           desc: iDesc >= 0 ? stripMd(r[iDesc]) : '',
@@ -879,9 +882,10 @@ export function parseRtm(tables, fileName, title) {
           auto,
           nAuto,
           nTc,
-          declared: iSt >= 0 ? stripMd(r[iSt]) : '',
-          status:
-            tcs.length === 0
+          declared,
+          status: isOutOfScope
+            ? 'OUTOFSCOPE'
+            : tcs.length === 0
               ? 'NOTCOVERED'
               : nAuto === 0
                 ? 'MANUAL'
@@ -953,6 +957,253 @@ export function parseRtm(tables, fileName, title) {
   };
 }
 
+export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = '', maybeTitle = '') {
+  let tables;
+  let lines;
+  let fileName;
+  let title;
+
+  if (typeof rawOrTables === 'string') {
+    lines = rawOrTables.split(/\r?\n/);
+    tables = parseMarkdownTables(lines);
+    fileName = String(nameOrLines || '');
+    title = (lines.find((l) => /^#\s+/.test(l)) || '').replace(/^#\s+/, '').trim();
+  } else {
+    tables = Array.isArray(rawOrTables) ? rawOrTables : [];
+    lines = Array.isArray(nameOrLines) ? nameOrLines : String(nameOrLines || '').split(/\r?\n/);
+    fileName = String(maybeFileName || '');
+    title = String(maybeTitle || '');
+  }
+
+  let meta = {};
+  for (const t of tables) {
+    if (isKVTable(t) && !t.heading) meta = { ...kvOfTable(t), ...meta };
+  }
+
+  let verdictBanner = '';
+  for (const l of lines) {
+    const m = l.match(/^>\s*#{1,3}\s*(.+)$/);
+    if (m) {
+      verdictBanner = stripMd(m[1]);
+      break;
+    }
+  }
+  let verdict = 'GO';
+  if (/NO[-_ ]?GO/i.test(verdictBanner)) verdict = 'NO_GO';
+  else if (/ĐIỀU KIỆN|CONDITIONAL/i.test(verdictBanner)) verdict = 'CONDITIONAL_GO';
+
+  const untested = [];
+  const exitCriteria = [];
+  const modules = [];
+  const defectSummary = [];
+  const openBugs = [];
+  const rtmMetrics = [];
+
+  for (const t of tables) {
+    const H = t.header;
+    const iCrit = colIdx(H, /tiêu chí/i);
+    const iThr = colIdx(H, /ngưỡng/i);
+    const iAct = colIdx(H, /thực tế/i);
+    const iRes = colIdx(H, /kết quả/i);
+
+    const iMod = colIdx(H, /^module$/i);
+    const iPref = colIdx(H, /^prefix$/i);
+    const iTotTc = colIdx(H, /tổng tc/i);
+    const iPass = colIdx(H, /\bpass\b/i);
+    const iFail = colIdx(H, /\bfail\b/i);
+    const iBlk = colIdx(H, /block/i);
+    const iSkip = colIdx(H, /skip/i);
+    const iRate = colIdx(H, /pass rate/i);
+    const iSrc = colIdx(H, /nguồn|latest/i);
+
+    const iReason = colIdx(H, /nguyên nhân/i);
+    const iRisk = colIdx(H, /rủi ro/i);
+
+    const iBugId = colIdx(H, /mã bug/i);
+    const iSev = colIdx(H, /severity|mức độ/i);
+    const iOpenCount = colIdx(H, /^đang mở$/i);
+
+    const iMetric = colIdx(H, /^chỉ số$/i);
+    const iVal = colIdx(H, /^giá trị$/i);
+
+    if (iCrit >= 0 && iThr >= 0 && iAct >= 0) {
+      const iIdx = colIdx(H, /^#$/);
+      for (const r of t.rows) {
+        const criterion = stripMd(r[iCrit]);
+        if (!criterion) continue;
+        const rawRes = iRes >= 0 ? r[iRes] : '';
+        const status = /không đạt|❌|fail/i.test(rawRes) ? 'FAIL' : 'PASS';
+        const idxVal = iIdx >= 0 ? stripMd(r[iIdx]) : String(exitCriteria.length + 1);
+        exitCriteria.push({
+          idx: idxVal,
+          index: idxVal,
+          criterion,
+          threshold: stripMd(r[iThr]),
+          actual: stripMd(r[iAct]),
+          result: stripMd(rawRes),
+          status,
+        });
+      }
+    } else if (iMod >= 0 && iTotTc >= 0 && iRate >= 0) {
+      for (const r of t.rows) {
+        const mod = stripMd(r[iMod]);
+        if (!mod) continue;
+        const srcVal = iSrc >= 0 ? stripMd(r[iSrc]) : '';
+        const prefVal = iPref >= 0 ? stripMd(r[iPref]) : mod.toUpperCase();
+        modules.push({
+          module: mod,
+          prefix: prefVal,
+          latestRun: srcVal,
+          total: +(stripMd(r[iTotTc]) || 0),
+          pass: iPass >= 0 ? +(stripMd(r[iPass]) || 0) : 0,
+          fail: iFail >= 0 ? +(stripMd(r[iFail]) || 0) : 0,
+          blocked: iBlk >= 0 ? +(stripMd(r[iBlk]) || 0) : 0,
+          skipped: iSkip >= 0 ? +(stripMd(r[iSkip]) || 0) : 0,
+          passRate: stripMd(r[iRate]),
+          source: srcVal,
+          openBugs: 0,
+        });
+      }
+    } else if (iMod >= 0 && iReason >= 0) {
+      const iSt = colIdx(H, /trạng thái/i);
+      for (const r of t.rows) {
+        const mod = stripMd(r[iMod]);
+        const st = iSt >= 0 ? stripMd(r[iSt]) : '';
+        if (!mod || /^đã phủ 100%/i.test(st)) continue;
+        const mPref = mod.match(/\(`?([A-Z0-9_]+)`?\)/);
+        untested.push({
+          module: mod,
+          prefix: iPref >= 0 ? stripMd(r[iPref]) : mPref ? mPref[1] : mod.toUpperCase(),
+          status: st,
+          reason: stripMd(r[iReason]),
+          risk: iRisk >= 0 ? stripMd(r[iRisk]) : '',
+        });
+      }
+    } else if (iBugId >= 0 && iSev >= 0) {
+      const iTitle = colIdx(H, /tiêu đề/i);
+      const iPrio = colIdx(H, /priority/i);
+      const iTcReq = colIdx(H, /tc|req/i);
+      const iSt = colIdx(H, /trạng thái/i);
+      for (const r of t.rows) {
+        const id = stripMd(r[iBugId]);
+        if (!id) continue;
+        const stRaw = iSt >= 0 ? stripMd(r[iSt]) : 'OPEN';
+        openBugs.push({
+          id,
+          module: iMod >= 0 ? stripMd(r[iMod]) : '',
+          title: iTitle >= 0 ? stripMd(r[iTitle]) : '',
+          severity: stripMd(r[iSev]),
+          priority: iPrio >= 0 ? stripMd(r[iPrio]) : '',
+          tcReq: iTcReq >= 0 ? stripMd(r[iTcReq]) : '',
+          status: /đóng|closed|fixed/i.test(stRaw) ? 'CLOSED' : 'OPEN',
+          statusRaw: stRaw,
+        });
+      }
+    } else if (iSev >= 0 && iOpenCount >= 0) {
+      const iTot = colIdx(H, /tổng số/i);
+      const iClosed = colIdx(H, /đã đóng/i);
+      for (const r of t.rows) {
+        const sev = stripMd(r[iSev]);
+        if (!sev) continue;
+        defectSummary.push({
+          severity: sev,
+          total: iTot >= 0 ? +(stripMd(r[iTot]) || 0) : 0,
+          open: +(stripMd(r[iOpenCount]) || 0),
+          closed: iClosed >= 0 ? +(stripMd(r[iClosed]) || 0) : 0,
+        });
+      }
+    } else if (iMetric >= 0 && iVal >= 0) {
+      for (const r of t.rows) {
+        const metric = stripMd(r[iMetric]);
+        if (!metric) continue;
+        rtmMetrics.push({
+          metric,
+          value: stripMd(r[iVal]),
+        });
+      }
+    }
+  }
+
+  for (const m of modules) {
+    m.openBugs = openBugs.filter(
+      (b) => b.module.toLowerCase() === m.module.toLowerCase()
+    ).length;
+  }
+
+  const total = modules.reduce((s, m) => s + m.total, 0);
+  const pass = modules.reduce((s, m) => s + m.pass, 0);
+  const fail = modules.reduce((s, m) => s + m.fail, 0);
+  const blocked = modules.reduce((s, m) => s + m.blocked, 0);
+  const skipped = modules.reduce((s, m) => s + m.skipped, 0);
+  const executedModulesCount = modules.filter((m) => m.total > 0 && !/chưa chạy/i.test(m.source)).length;
+  const denom = pass + fail + blocked;
+  const passRate = denom > 0 ? ((pass / denom) * 100).toFixed(1) + '%' : '—';
+  const exitPassed = exitCriteria.filter((c) => c.status === 'PASS').length;
+  const exitTotal = exitCriteria.length;
+  const openBugsTotal =
+    openBugs.length || defectSummary.reduce((s, d) => s + d.open, 0);
+
+  if (!verdictBanner && exitTotal > 0) {
+    verdict = exitPassed === exitTotal ? 'GO' : 'CONDITIONAL_GO';
+    verdictBanner = `${verdict} — Đạt ${exitPassed}/${exitTotal} tiêu chí exit`;
+  }
+
+  const totals = {
+    modulesCount: modules.length,
+    executedModulesCount,
+    total,
+    totalExecuted: total,
+    pass,
+    fail,
+    blocked,
+    skipped,
+    passRate,
+    exitPassed,
+    exitTotal,
+    openBugsTotal,
+  };
+
+  const scopeTitle = (title.split(/—|--/)[1] || '').trim();
+  const summaryPayload = {
+    verdict,
+    verdictBanner,
+    recommendation: verdict,
+    recommendationLabel: verdictBanner,
+    exitCriteria,
+    modules,
+    untested,
+    defectSummary,
+    openBugs,
+    rtmMetrics,
+    rtmSummary: rtmMetrics,
+    totals,
+  };
+
+  return {
+    kind: 'summary',
+    fileName,
+    title,
+    module: scopeTitle || meta['Phạm vi · Mốc'] || String(fileName || '').replace(/\.md$/, ''),
+    runId: meta['Phạm vi · Mốc'] || String(fileName || '').replace(/\.md$/, ''),
+    build: '',
+    meta,
+    recommendation: verdict,
+    recommendationLabel: verdictBanner,
+    exitCriteria,
+    modules,
+    untested,
+    defectSummary,
+    openBugs,
+    rtmMetrics,
+    rtmSummary: rtmMetrics,
+    totals,
+    tcs: [],
+    bugs: [],
+    dirty: 0,
+    summary: summaryPayload,
+  };
+}
+
 export function parseExecutionReport(text, fileName) {
   const lines = String(text || '').split(/\r?\n/);
   const titleLine = (lines.find((l) => /^#\s+/.test(l)) || '').replace(/^#\s+/, '').trim();
@@ -960,6 +1211,13 @@ export function parseExecutionReport(text, fileName) {
   const tables = parseMarkdownTables(lines);
   if (/ma trận truy vết|traceability|\bRTM\b/i.test(titleLine) || /traceab|rtm/i.test(fileName)) {
     return parseRtm(tables, fileName, titleLine);
+  }
+  if (
+    /báo cáo tổng hợp kiểm thử|test summary report|test completion report/i.test(titleLine) ||
+    /^test_summary/i.test(String(fileName || '')) ||
+    tables.some((t) => /tiêu chí exit|exit criteria/i.test(t.heading || ''))
+  ) {
+    return parseTestSummary(tables, lines, fileName, titleLine);
   }
 
   let meta = {};
@@ -1068,12 +1326,15 @@ export function parseExecutionReport(text, fileName) {
       runId,
       build,
       file: fileName,
-      severity: kv['Severity gốc'] || '',
+      severity: kv['Severity gốc'] || kv['Severity'] || '',
       expected: kv['Expected (theo bug gốc)'] || kv['Expected'] || '',
       actual: kv['Actual lần này'] || kv['Actual'] || '',
       repeat: kv['Số lần lặp'] || '',
-      tcReq: kv['TC / REQ liên quan'] || '',
-      evidence: kv['Evidence'] || '',
+      tcReq:
+        kv['TC / REQ liên quan'] ||
+        [kv['TC gốc'], kv['REQ ID']].filter(Boolean).join(' · ') ||
+        '',
+      evidence: kv['Evidence'] || kv['Bằng chứng'] || '',
     });
   }
 
@@ -1108,7 +1369,7 @@ export function computeExecutionTrend(docs) {
   };
   const out = [];
   const byMod = {};
-  for (const d of docs.filter((x) => x.kind !== 'rtm')) {
+  for (const d of docs.filter((x) => x.kind !== 'rtm' && x.kind !== 'summary')) {
     (byMod[d.module] = byMod[d.module] || []).push(d);
   }
   for (const [mod, modDocs] of Object.entries(byMod)) {
@@ -1137,14 +1398,85 @@ export function computeExecutionTrend(docs) {
   return out.sort((a, b) => rank[a.grp] - rank[b.grp] || compareTcId(a.id, b.id));
 }
 
-export function buildExecutionExportPlan({
-  tab = 'tc',
-  tcRows = [],
-  trendRows = [],
-  bugRows = [],
-  covAll = null,
-  covRows = [],
-} = {}) {
+export function buildExecutionExportPlan(arg = {}) {
+  const isDirectSummary = arg && arg.kind === 'summary';
+  const {
+    tab = isDirectSummary ? 'sum' : 'tc',
+    tcRows = [],
+    trendRows = [],
+    bugRows = [],
+    covAll = null,
+    covRows = [],
+    summaryDoc = isDirectSummary ? arg : null,
+  } = arg;
+  if (tab === 'sum' || isDirectSummary) {
+    const rawSum = summaryDoc?.summary || summaryDoc || {};
+    const exitCriteria = rawSum.exitCriteria || [];
+    const modules = rawSum.modules || [];
+    const untested = rawSum.untested || [];
+    const openBugs = rawSum.openBugs || [];
+    const rtmMetrics = rawSum.rtmMetrics || [];
+
+    const sheets = [
+      {
+        name: 'Tiêu chí Exit',
+        statusCol: 4,
+        widths: [6, 44, 16, 22, 14],
+        head: ['#', 'Tiêu chí', 'Ngưỡng', 'Thực tế', 'Kết quả'],
+        rows: exitCriteria.map((c) => [c.index, c.criterion, c.threshold, c.actual, c.status]),
+      },
+      {
+        name: 'Kết quả theo Module',
+        widths: [18, 10, 10, 10, 12, 10, 12, 32],
+        head: ['Module', 'Tổng TC', 'PASS', 'FAIL', 'BLOCKED', 'SKIPPED', 'Pass rate', 'Nguồn'],
+        rows: modules.map((m) => [
+          m.module,
+          String(m.total),
+          String(m.pass),
+          String(m.fail),
+          String(m.blocked),
+          String(m.skipped),
+          m.passRate,
+          m.source,
+        ]),
+      },
+    ];
+    if (untested.length) {
+      sheets.push({
+        name: 'Vùng chưa kiểm thử',
+        widths: [20, 22, 44, 16],
+        head: ['Module', 'Trạng thái', 'Nguyên nhân chưa kiểm thử', 'Mức rủi ro'],
+        rows: untested.map((u) => [u.module, u.status, u.reason, u.risk]),
+      });
+    }
+    if (openBugs.length) {
+      sheets.push({
+        name: 'Bug đang mở',
+        statusCol: 6,
+        widths: [28, 16, 42, 14, 10, 24, 16],
+        head: ['Mã Bug', 'Module', 'Tiêu đề', 'Severity', 'Priority', 'TC / REQ', 'Trạng thái'],
+        rows: openBugs.map((b) => [
+          b.id,
+          b.module,
+          b.title,
+          b.severity,
+          b.priority,
+          b.tcReq,
+          b.status,
+        ]),
+      });
+    }
+    if (rtmMetrics.length) {
+      sheets.push({
+        name: 'Độ phủ RTM',
+        widths: [42, 24],
+        head: ['Chỉ số', 'Giá trị'],
+        rows: rtmMetrics.map((m) => [m.metric, m.value]),
+      });
+    }
+    return { base: 'test_summary_report', sheets };
+  }
+
   if (tab === 'cov') {
     const R = covAll || { notAuto: [], orphans: [], guesses: [], undocumented: [] };
     const sheets = [
@@ -1463,6 +1795,7 @@ export const XLSX_STATUS_STYLES = {
   High: 5,
   'Mới có TC thủ công': 5,
   SKIPPED: 6,
+  'Ngoài phạm vi': 6,
   Medium: 6,
   PARTIAL: 7,
   'Automate một phần': 7,

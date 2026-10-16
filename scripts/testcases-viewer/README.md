@@ -12,7 +12,7 @@ Dùng để đọc output của các workflow sinh test case trong repo này:
 Mở file [`bundle.html`](bundle.html) bằng trình duyệt (double-click là được) — đây là bản build đã đóng gói toàn bộ HTML/CSS/JS vào 1 file duy nhất, chạy offline.
 
 Sau đó **kéo thả** hoặc bấm **+ Import file .md** để nạp file test cases, ví dụ:
-`docs/testcases/test_cases_login.md`
+`docs/testcases/login/test_cases_login.md`
 
 > Toàn bộ xử lý chạy trong trình duyệt, không gửi dữ liệu đi đâu. File đã import được lưu vào `localStorage` nên lần mở sau vẫn còn.
 
@@ -50,7 +50,7 @@ Thẻ `<br>` được đổi thành xuống dòng thật, markdown inline (`` ` 
 
 Tên file dạng `<tên file nguồn>_<yyyyMMdd-HHmmss>.csv|.xlsx`.
 
-> File `.xlsx` được dựng thủ công bằng zip + Office Open XML (`src/lib/export.ts`) thay vì dùng
+> File `.xlsx` được dựng bằng store-only ZIP + Office Open XML qua module lõi dùng chung `scripts/viewer-core.mjs` (được re-export tại `src/lib/export.ts`) thay vì dùng
 > SheetJS — thư viện nặng ~900 KB sẽ làm phình `bundle.html` vốn phải mở offline được. Zip ghi ở
 > chế độ STORE (không nén) nên file to hơn bình thường: 54 test case ≈ 185 KB.
 
@@ -92,15 +92,16 @@ Build lại `bundle.html` sau khi sửa code:
 pnpm run bundle
 ```
 
-**Stack:** React 18 + TypeScript + Vite (dev) + Parcel (bundle) + Tailwind CSS + shadcn/ui
+**Stack:** React 19 + TypeScript + Vite (dev) + Parcel (bundle) + Tailwind CSS + shadcn/ui + `scripts/viewer-core.mjs`
 
 **Cấu trúc:**
 
 | File | Vai trò |
 |---|---|
-| `src/lib/parser.ts` | Parse Markdown → mảng `TestCase` (tách cell, nhận diện cột, gom nhóm theo heading) |
+| `../viewer-core.mjs` | Module lõi dùng chung cho cả 3 viewer (`testcases-viewer`, `execution-viewer`, `bugs-viewer`): parse bảng Markdown, sort tự nhiên tiếng Việt, dựng Export Plan, xuất CSV BOM & `.xlsx` |
+| `src/lib/parser.ts` | TypeScript wrapper re-export bộ parser & query từ `scripts/viewer-core.mjs` |
 | `src/App.tsx` | Toàn bộ UI: import, sidebar, toolbar lọc, bảng, panel chi tiết |
-| `src/lib/export.ts` | Xuất CSV và .xlsx (gồm cả bộ ghi zip tối giản, không dùng thư viện ngoài) |
+| `src/lib/export.ts` | TypeScript wrapper gọi `buildTestCasesExportPlan`, `buildCsvString`, `buildXlsxBytes` từ `scripts/viewer-core.mjs` |
 | `src/lib/assets.ts` | **File sinh tự động** — logo + favicon dạng data URI. Không sửa tay |
 | `tools/embed-assets.mjs` | Script sinh `assets.ts` và chèn favicon vào `index.html` |
 | `bundle.html` | Bản build 1 file — commit vào repo để dùng ngay không cần build |

@@ -26,4 +26,5 @@
 # GHI CHÚ
 - Workflow này chỉ phân tích và báo cáo, KHÔNG tự sửa test/code/TC
 - Nhánh MANUAL: agent đọc mục BLOCKED TRƯỚC mục FAIL — BLOCKED > 20% thì không kết luận chất lượng
+- Cần đẩy kết quả chạy Automation lên Jira Xray → dùng /import-test-results-xray
 - Cần gộp nhiều module thành báo cáo gửi PM/khách → dùng /generate-test-summary-report thay vì workflow này

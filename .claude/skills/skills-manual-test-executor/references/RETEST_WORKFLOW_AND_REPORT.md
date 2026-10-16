@@ -13,7 +13,7 @@
    - Giữ nguyên toàn bộ mô tả gốc (`Steps to Reproduce`, `Expected`, `Actual`, ảnh lỗi ban đầu) làm bằng chứng lịch sử; chỉ nối thêm dòng kết quả mới lên đầu bảng `## Lịch sử retest` ở cuối file bug.
 3. **Hai chế độ thực thi:**
    - **`FULL` (Mặc định cho mọi bug `Critical` / `Major` hoặc bản sửa chạm logic dùng chung):** Xác minh lại bug gốc (tối thiểu 2 lần liên tiếp) + chạy kiểm thử hồi quy (Regression) tối đa **15 Test Cases** theo 3 vòng đồng tâm.
-   - **`RETEST` (Dùng cho bug `Minor` / `Trivial` cô lập như sửa chính tả, căn chỉnh UI):** Chỉ xác minh lại đúng bug gốc (tối thiểu 2 lần liên tiếp).
+   - **`RETEST` (Dùng cho bug `Minor` / `Trivial` cô lập như sửa chính tả, căn chỉnh UI):** Chỉ xác minh lại đúng bug gốc (tối thiểu 2 lần liên tiếp, lược bỏ mục `## 3. Kết quả regression`).
 
 ---
 
@@ -42,37 +42,48 @@ Khi chạy `Mode = FULL`, chọn tối đa **15 Test Cases** từ `docs/testcase
 
 ---
 
-## 4. Output Schema — `docs/executions/<module>/retest_<timestamp>/retest_report.md`
+## 4. Output Schema Chuẩn — `docs/executions/<module>/retest_<timestamp>/retest_report.md`
+
+Schema dưới đây tương thích 100% với `scripts/execution-viewer/bundle.html` (`parseExecutionReport`) và `scripts/validate-docs.mjs`:
 
 ```markdown
-# Retest Report — <Mã Bug> · <Build Mới>
+# Retest Report — Customers · Build v2.4.3
 
 | Thông tin | Nội dung |
 |---|---|
-| Bug gốc | [BUG_...](../../../bugs/<module>/BUG_....md) |
-| Build lúc mở bug → Build retest | v2.4.1 → v2.4.3 |
+| Retest ID | retest_1785700999 |
+| Build lúc log bug → Build retest | v2.4.1 → v2.4.3 |
 | Chế độ chạy | FULL (hoặc RETEST) |
-| Môi trường | `<URL>` (Dùng chung: Có/Không) |
-| Kết quả xác minh | ✅ FIXED / ❌ NOT_FIXED / 🟡 PARTIAL / ⚠️ CANNOT_VERIFY |
+| Môi trường | https://crm.anhtester.com/admin/ — Staging |
+| Bắt đầu → Kết thúc | 2026-08-22 10:00 → 10:25 |
 
-## 1. Kết quả verify bug gốc (≥ 2 lần chạy)
-| Lần chạy | Các bước thực hiện | Kết quả thực tế | Bằng chứng |
-|---|---|---|---|
-| Lần 1 | Theo đúng Steps to Reproduce | Khớp Expected Result | [ảnh](evidence/<BUG_ID>_retest_run1.png) |
-| Lần 2 | Lặp lại độc lập | Khớp Expected Result | [ảnh](evidence/<BUG_ID>_retest_run2.png) |
+## 1. Tổng kết nhanh
+- **Bug xác minh:** 1 FIXED · 0 NOT_FIXED · 0 PARTIAL · 0 CANNOT_VERIFY
+- **Regression (`Mode = FULL`):** 1 PASS · 0 FAIL · 0 BLOCKED · 0 SKIPPED
 
-## 2. Regression quanh vùng fix (Ghi rõ phạm vi chọn & phần cố ý bỏ)
-| Vòng đồng tâm | TC ID | Test Scenario | Kết quả | Bằng chứng / Ghi chú |
+## 2. Kết quả từng bug
+### BUG_cust_1785700456_TC011 — Lỗi lưu SĐT có dấu cộng
+| Thông tin | Nội dung |
+|---|---|
+| Bug | [BUG_cust_1785700456_TC011](../../../bugs/customers/BUG_cust_1785700456_TC011.md) |
+| Severity gốc | 🟠 Major |
+| TC / REQ liên quan | CRM_CUST_TC_011 · REQ-CUST-04 |
+| Số lần lặp | 2/2 lần chạy độc lập |
+| Expected (theo bug gốc) | Lưu thành công SĐT định dạng quốc tế `+84...` |
+| Actual lần này | Lưu thành công và hiển thị đúng trên danh sách |
+| **Kết quả** | ✅ FIXED |
+| Evidence | [run1](evidence/BUG_cust_1785700456_TC011_retest_run1.png), [run2](evidence/BUG_cust_1785700456_TC011_retest_run2.png) |
+
+## 3. Kết quả regression
+| TC ID | Vòng | Kịch bản | Kết quả | Ghi chú |
 |---|---|---|---|---|
-| Vòng 1 (Cùng REQ) | CRM_CUST_TC_012 | ... | ✅ PASS | [ảnh](evidence/CRM_CUST_TC_012_pass.png) |
-
-## 3. Regression phát sinh do fix
-- (Ghi `Không phát sinh` hoặc dẫn link tới mã `BUG_*` mới vừa tách).
+| CRM_CUST_TC_012 | Vòng 1 (Cùng REQ) | Lưu SĐT nội địa 10 chữ số | ✅ PASS | [ảnh](evidence/CRM_CUST_TC_012_pass.png) |
 
 ## 4. Dữ liệu đã tạo & dọn dẹp
-| Dữ liệu (`auto_retest_<timestamp>`) | ID | Nơi tạo | Đã xoá? |
+| Dữ liệu | ID | Nơi tạo | Đã xoá? |
 |---|---|---|---|
+| Auto_Retest_1785700999 | 108 | /admin/clients | ✅ |
 
 ## 5. Kết luận & đề xuất đóng/mở bug
-- Đề xuất: Đóng bug / Giữ mở kèm lý do cụ thể.
+- Đề xuất: Đóng `BUG_cust_1785700456_TC011` (đã FIXED ổn định qua 2 lần chạy và không phát sinh lỗi hồi quy).
 ```

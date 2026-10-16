@@ -22,8 +22,9 @@ Thư mục này chứa các prompt mẫu dùng nhanh (copy → paste → gửi) 
 |---|------|-------------------|----------------|----------------------|
 | 00 | `prompt_00_discover_system.txt` | `/discover-system` | `skills-requirements-analyzer` | **[Mới]** Chạy **đầu tiên** khi hệ thống không có tài liệu — crawl navigation, lập bản đồ module, gán prefix, khởi tạo danh mục. 3 modes UI/HYBRID/DOC |
 | 01 | `prompt_01_generate_requirements.txt` | `/generate-requirements-from-website` | `skills-requirements-analyzer` | Phân tích website/sơ đồ để sinh tài liệu Yêu cầu |
-| 20 | `prompt_20_analyze_requirement_document.txt` | `/analyze-requirement-document` | `skills-requirements-analyzer` | **[Mới]** Phân tích ticket/tài liệu (.docx/.xlsx/.pdf/mockup) → `analysis_<TICKET-ID>.md` kèm REQ ID + Ambiguity/Risk. **KHÔNG** sinh test cases |
+| 20 | `prompt_20_analyze_requirement_document.txt` | `/analyze-requirement-document` · `/fetch-jira-requirements` | `skills-requirements-analyzer` · `skills-jira-integration` | **[Mới]** Kéo ticket từ Jira (`/fetch-jira-requirements`) hoặc phân tích tài liệu (.docx/.xlsx/.pdf/mockup) → `analysis_<TICKET-ID>.md` kèm REQ ID + Ambiguity/Risk |
 | 21 | `prompt_21_update_requirements_from_ticket.txt` | `/update-requirements-from-ticket` | `skills-requirements-analyzer` | **[Mới]** Delta mode cho requirements — sửa tại chỗ tài liệu module, giữ nguyên REQ ID, ghi Nhật ký thay đổi, xuất **Impact Report** (input cho `prompt_27`) |
+| 31 | `prompt_31_generate_cross_module_test_plan.txt` | `/generate-cross-module-test-plan` | `skills-requirements-analyzer` | **[Mới]** Phân tích tính năng đi qua nhiều modules nối tiếp — lập Module Dependency Map, Dimension Catalog và ma trận tổ hợp (Output-Class / Pairwise / Cartesian) |
 
 ### 📝 Manual Test Cases
 
@@ -43,20 +44,21 @@ Thư mục này chứa các prompt mẫu dùng nhanh (copy → paste → gửi) 
 | 03 | `prompt_03_create_framework_playwright.txt` | `/generate-automation-framework` | `skills-framework-architect` | Dựng khung dự án Automation Playwright TypeScript |
 | 03 | `prompt_03_create_framework_selenium.txt` | `/generate-automation-framework` | `skills-framework-architect` | Dựng khung dự án Automation Selenium Java |
 | 03 | `prompt_03_create_framework_appium.txt` | `/generate-automation-framework` | `skills-framework-architect` | Dựng khung dự án Automation Appium Java (Mobile) |
-| 04 | `prompt_04_generate_script_playwright.txt` | `/generate-automation-from-testcases` | `skills-qa-automation-engineer` | Viết kịch bản tự động Playwright TypeScript theo POM |
+| 04 | `prompt_04_generate_script_playwright.txt` | `/generate-automation-from-testcases` · `/generate-automation-from-ui-flow` | `skills-qa-automation-engineer` | Viết kịch bản tự động Playwright TypeScript theo POM từ bộ TC hoặc khám phá trực tiếp UI Flow |
 | 04 | `prompt_04_generate_script_selenium.txt` | `/generate-automation-from-testcases` | `skills-qa-automation-engineer` | Viết kịch bản tự động Selenium Java theo POM |
 | 05 | `prompt_05_convert_manual_to_automation.txt` | `/generate-automation-from-testcases` | `skills-qa-automation-engineer` | Chuyển đổi Manual Test Cases sang Automation Script |
 | 26 | `prompt_26_generate_automation_mobile_flow.txt` | `/generate-automation-from-mobile-flow` | `skills-mobile-debug-agent` | **[Mới]** Sinh automation Appium từ flow chạy thật trên device — **Native Android/iOS, Flutter, Hybrid**. Nhận diện loại app trước, thu locator từ UI hierarchy, tách locator theo nền tảng |
 | 09 | `prompt_09_generate_api_tests.txt` | `/generate-api-tests-from-swagger` | `skills-qa-automation-engineer` | **[Nâng cấp mới]** Sinh API tests từ Swagger/OpenAPI cover 12 HTTP Status Codes, OWASP API Security (BOLA/IDOR, Mass Assignment, ReDoS), SLA < 2s & Dynamic Auth Token |
 | 14 | `prompt_14_generate_api_mocks.txt` | `/generate-api-mocks` | `skills-api-mocking` | Sinh API mocks (Playwright route / WireMock) + tests cho edge cases |
 
-### 🔧 Bảo trì Automation
+### 🔧 Bảo trì Automation & Chế độ Trình duyệt
 
 | # | File | Command Tương Ứng | Skill Tích Hợp | Mô Tả & Cải Tiến Mới |
 |---|------|-------------------|----------------|----------------------|
+| 29 | `prompt_29_browser_mode.txt` | `/browser-mode` | `skills-ui-debug-agent` | **[Mới]** Kiểm tra hoặc chuyển đổi chế độ trình duyệt giữa **Headless (`1920x1080`, mặc định)** và **Headed (`1600x750`)**, kèm bật/tắt quay video bằng chứng |
 | 06 | `prompt_06_review_automation_code.txt` | `/review-automation-code` | `skills-automation-code-reviewer` | **[Mới]** Review chất lượng automation code theo Definition of Done — rubric 6 nhóm, bắt hard sleep / locator inline / thiếu Allure metadata / assertion yếu (pass giả). 2 modes REVIEW/FIX |
 | 17 | `prompt_17_run_and_fix_tests.txt` | `/run-and-fix-tests` | `skills-test-report-analyzer` | **[Mới]** Chạy suite có sẵn → phân loại failure theo root cause → tự sửa nhóm sửa được → chạy lại. 2 modes RUN/FIX. Bug app giữ nguyên đỏ, không sửa test để né |
-| 18 | `prompt_18_heal_locators.txt` | `/heal-locators` | `skills-locator-healer-agent` | **[Mới]** Rà locator trong Page Object đối chiếu DOM thực tế sau khi UI đổi — bắt cả locator gãy, mong manh và sai element. 2 modes SCAN/HEAL |
+| 18 | `prompt_18_heal_locators.txt` | `/heal-locators` · `/generate-locator` | `skills-locator-healer-agent` · `skills-smart-locator-agent` | **[Mới]** Trích xuất locator chuẩn (`/generate-locator`) hoặc rà locator trong Page Object đối chiếu DOM thực tế sau khi UI đổi (`/heal-locators`). 2 modes SCAN/HEAL |
 | 19 | `prompt_19_update_automation_from_impact.txt` | `/update-automation-from-impact` | `skills-coverage-traceability` | **[Mới]** Delta mode cho automation — mắt xích **cuối** của chuỗi delta 3 tầng. Từ Delta TC List (`prompt_27`) map TC đã đổi sang script, sửa đúng phần đổi, không sinh lại cả module. 2 modes PLAN/APPLY |
 | 08 | `prompt_08_analyze_flaky_tests.txt` | `/analyze-flaky-tests` | `skills-flaky-test-analyzer` | Phân tích và khắc phục Flaky Tests |
 
@@ -64,20 +66,22 @@ Thư mục này chứa các prompt mẫu dùng nhanh (copy → paste → gửi) 
 
 | # | File | Command Tương Ứng | Skill Tích Hợp | Mô Tả & Cải Tiến Mới |
 |---|------|-------------------|----------------|----------------------|
-| 07 | `prompt_07_generate_test_data.txt` | `/generate-test-data` | `skills-test-data-generator` | Sinh dữ liệu kiểm thử có cấu trúc |
+| 07 | `prompt_07_generate_test_data.txt` | `/generate-test-data` | `skills-test-data-generator` | Sinh dữ liệu kiểm thử có cấu trúc cho 1 form / API |
+| 32 | `prompt_32_generate_combinatorial_test_data.txt` | `/generate-combinatorial-test-data` | `skills-test-data-generator` | **[Mới]** Sinh test data tổ hợp đa chiều từ `/generate-cross-module-test-plan` — 2 modes GENERATE (JSON/CSV/Code) và PIPELINE (tạo data thật liên hoàn qua nhiều modules) |
 | 10 | `prompt_10_create_bug_report.txt` | `/create-bug-report` | `skills-bug-reporter` | Sinh bug report chuẩn từ test FAIL — evidence, severity/priority, tùy chọn đẩy Jira |
-| 11 | `prompt_11_analyze_test_report.txt` | `/analyze-test-report` | `skills-test-report-analyzer` | **[Nâng cấp]** Phân tích test report — **2 nhánh AUTOMATION / MANUAL**. Gom nhóm failure theo root cause, so sánh trend, đề xuất thứ tự xử lý |
+| 11 | `prompt_11_analyze_test_report.txt` | `/analyze-test-report` · `/import-test-results-xray` | `skills-test-report-analyzer` · `skills-jira-integration` | **[Nâng cấp]** Phân tích test report (AUTOMATION / MANUAL), gom nhóm failure theo root cause, và đồng bộ kết quả chạy lên Jira Xray (`/import-test-results-xray`) |
 | 13 | `prompt_13_generate_traceability_matrix.txt` | `/generate-traceability-matrix` | `skills-coverage-traceability` | Sinh ma trận truy vết RTM 3 tầng — tìm requirement chưa cover, orphan tests |
 | 23 | `prompt_23_retest_fixed_bugs.txt` | `/retest-fixed-bugs` | `skills-manual-test-executor`, `skills-bug-reporter` | **[Mới]** Retest bug đã fix trên build mới — chấm FIXED/NOT_FIXED/PARTIAL/CANNOT_VERIFY, chạy regression quanh vùng fix, ghi Lịch sử retest vào bug gốc. 2 modes RETEST/FULL |
 
-### 📊 Kế Hoạch & Báo Cáo Cấp Quản Lý
+### 📊 Kế Hoạch & Báo Cáo Cấp Quản Lý / Kiến Trúc
 
 | # | File | Command Tương Ứng | Skill Tích Hợp | Mô Tả & Cải Tiến Mới |
 |---|------|-------------------|----------------|----------------------|
+| 30 | `prompt_30_generate_application_test_plan.txt` | `/generate-application-test-plan` | `skills-rbt-manual-testing` | **[Mới]** Chiến lược Kiểm thử Kỹ thuật Cấp Hệ thống — điều phối thứ tự test đa module theo phụ thuộc dữ liệu, luồng E2E và phân bổ nguồn lực Vòng 1–4 |
 | 25 | `prompt_25_generate_master_test_plan.txt` | `/generate-master-test-plan` | `skills-test-summary-reporter` | **[Mới]** Master Test Plan — phạm vi & **ngoài phạm vi**, tiêu chí vào/ra, môi trường, nhân lực, lịch, rủi ro dự án. Tài liệu để PM/khách duyệt, **không** sinh test scenario |
 | 24 | `prompt_24_generate_test_summary_report.txt` | `/generate-test-summary-report` | `skills-test-summary-reporter` | **[Mới]** Báo cáo tổng hợp tại một mốc — gộp nhiều execution report + bug + RTM, đối chiếu tiêu chí exit, **khuyến nghị go/no-go có căn cứ** |
 
-> 📌 Hai prompt này đi thành cặp: `25` công bố tiêu chí exit **trước** khi test, `24` chấm lại đúng bộ đó **sau** khi test. Dùng lệch bộ tiêu chí là lúc release sẽ cãi nhau về chuẩn.
+> 📌 Hai prompt `25` và `24` đi thành cặp: `25` công bố tiêu chí exit **trước** khi test, `24` chấm lại đúng bộ đó **sau** khi test. Dùng lệch bộ tiêu chí là lúc release sẽ cãi nhau về chuẩn. Còn `30` (`/generate-application-test-plan`) tập trung vào thứ tự kỹ thuật liên module và E2E.
 
 ### 📘 Tài liệu cho Người dùng cuối
 

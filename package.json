@@ -6,8 +6,11 @@
   "description": "AI-RBT Manual Testing & Test Automation Skill Suite for Claude Code & Google Antigravity",
   "scripts": {
     "test": "node --test scripts/verify-suite.mjs",
-    "check": "node scripts/sync-antigravity.mjs --check && node --test scripts/verify-suite.mjs",
+    "check": "node scripts/sync-antigravity.mjs --check && node scripts/validate-docs.mjs --check && node --test scripts/verify-suite.mjs",
     "sync": "node scripts/sync-antigravity.mjs",
+    "docs:check": "node scripts/validate-docs.mjs --check",
+    "docs:rtm": "node scripts/validate-docs.mjs --rtm",
+    "docs:summary": "node scripts/validate-docs.mjs --summary",
     "browser:status": "node scripts/browser-mode.mjs status",
     "browser:headless": "node scripts/browser-mode.mjs headless",
     "browser:headed": "node scripts/browser-mode.mjs headed"
