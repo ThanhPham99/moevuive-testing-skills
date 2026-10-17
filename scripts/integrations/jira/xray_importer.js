@@ -26,8 +26,8 @@ export function extractTestKey(title, projectKey = '') {
   const cleanTitle = String(title || '');
   const prefix = String(projectKey || '').trim().toUpperCase();
   const pattern = prefix
-    ? new RegExp(`\\[?\\b(${prefix}-\\d+)\\b\\]?`)
-    : /\[?\b([A-Z][A-Z0-9_]+-\d+)\b\]?/;
+    ? new RegExp(`\\[?(?<![A-Z0-9])(${prefix}-\\d+)(?![A-Z0-9])\\]?`)
+    : /\[?(?<![A-Z0-9])([A-Z][A-Z0-9_]+-\d+)(?![A-Z0-9])\]?/;
   const match = cleanTitle.match(pattern);
   return match ? match[1] : null;
 }
@@ -128,25 +128,41 @@ export function convertPlaywrightToXray(
     for (const suite of suites) {
       for (const spec of suite.specs || []) {
         const title = spec.title || '';
-        const testEntry = (spec.tests || [])[0] || {};
-        const lastResult =
-          (testEntry.results || [])[(testEntry.results || []).length - 1] || {};
-        const rawStatus = lastResult.status || spec.status || 'skipped';
-        const errorMsg = lastResult.error?.message || '';
-        const testKey = extractTestKey(title, projectKey);
+        const testEntries =
+          Array.isArray(spec.tests) && spec.tests.length > 0 ? spec.tests : [{}];
+        for (const testEntry of testEntries) {
+          const results = Array.isArray(testEntry.results) ? testEntry.results : [];
+          const lastResult = results[results.length - 1] || {};
+          const rawStatus =
+            lastResult.status || testEntry.status || spec.status || 'skipped';
+          const errorMsg =
+            lastResult.error?.message ||
+            (Array.isArray(lastResult.errors) && lastResult.errors[0]?.message) ||
+            '';
+          const allAnnotations = [
+            ...(spec.annotations || []),
+            ...(testEntry.annotations || []),
+            ...(lastResult.annotations || []),
+          ];
+          const annotationText = allAnnotations
+            .map((a) => `${a.type || ''} ${a.description || ''}`)
+            .join(' ');
+          const testKey =
+            extractTestKey(title, projectKey) || extractTestKey(annotationText, projectKey);
 
-        if (!testKey) {
-          unmappedTests.push({ title, status: rawStatus });
-          continue;
+          if (!testKey) {
+            unmappedTests.push({ title, status: rawStatus });
+            continue;
+          }
+
+          const xrayStatus = mapStatusToXray(rawStatus, platform);
+          upsertTestResult(
+            testsByKey,
+            testKey,
+            xrayStatus,
+            errorMsg ? `Failure: ${errorMsg}` : `Executed: ${title}`
+          );
         }
-
-        const xrayStatus = mapStatusToXray(rawStatus, platform);
-        upsertTestResult(
-          testsByKey,
-          testKey,
-          xrayStatus,
-          errorMsg ? `Failure: ${errorMsg}` : `Executed: ${title}`
-        );
       }
       if (Array.isArray(suite.suites)) {
         walkSuites(suite.suites);
@@ -163,6 +179,40 @@ export function convertPlaywrightToXray(
   });
 }
 
+const XML_ENTITY_MAP = {
+  quot: '"',
+  apos: "'",
+  lt: '<',
+  gt: '>',
+  amp: '&',
+};
+
+function decodeXmlEntities(str) {
+  return String(str || '').replace(
+    /&(?:#(\d+)|#x([0-9a-f]+)|(quot|apos|lt|gt|amp));/gi,
+    (full, dec, hex, named) => {
+      if (named) return XML_ENTITY_MAP[named.toLowerCase()] ?? full;
+      const cp = dec !== undefined ? Number(dec) : parseInt(hex, 16);
+      return Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff
+        ? String.fromCodePoint(cp)
+        : full;
+    }
+  );
+}
+
+function extractXmlElementText(rawInner) {
+  const trimmed = String(rawInner || '').trim();
+  if (!trimmed) return '';
+  const cdataMatch = trimmed.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/i);
+  if (cdataMatch) {
+    return cdataMatch[1].trim();
+  }
+  if (/<!\[CDATA\[/i.test(trimmed)) {
+    return trimmed.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, (_, cdata) => cdata).trim();
+  }
+  return decodeXmlEntities(trimmed);
+}
+
 /**
  * Converts JUnit XML report content into an Xray JSON execution payload.
  */
@@ -177,26 +227,54 @@ export function convertJunitXmlToXray(
   for (const match of String(xmlContent || '').matchAll(testcaseRegex)) {
     const attrs = match[1] || '';
     const inner = match[2] || '';
-    const nameMatch = attrs.match(/\bname\s*=\s*"([^"]*)"/i) || attrs.match(/\bname\s*=\s*'([^']*)'/i);
-    const title = nameMatch ? nameMatch[1] : '';
+    const nameMatch =
+      attrs.match(/\bname\s*=\s*"([^"]*)"/i) || attrs.match(/\bname\s*=\s*'([^']*)'/i);
+    const classMatch =
+      attrs.match(/\bclassname\s*=\s*"([^"]*)"/i) || attrs.match(/\bclassname\s*=\s*'([^']*)'/i);
+    const title = nameMatch ? decodeXmlEntities(nameMatch[1]) : '';
+    const className = classMatch ? decodeXmlEntities(classMatch[1]) : '';
 
     let rawStatus = 'passed';
     let comment = `Executed: ${title}`;
     const failMatch = inner.match(/<(?:failure|error)\b([^>]*)>([\s\S]*?)<\/(?:failure|error)>/i);
     const selfClosingFail = inner.match(/<(?:failure|error)\b([^>]*)\/>/i);
-    const skipMatch = /<skipped\b/i.test(inner);
+    const skipTagMatch =
+      inner.match(/<skipped\b([^>]*)>([\s\S]*?)<\/skipped>/i) ||
+      inner.match(/<skipped\b([^>]*)\/>/i);
 
     if (failMatch || selfClosingFail) {
       rawStatus = 'failed';
       const attrStr = (failMatch || selfClosingFail)[1] || '';
-      const msgAttr = attrStr.match(/\bmessage\s*=\s*"([^"]*)"/i);
-      const bodyText = failMatch ? failMatch[2].trim() : '';
-      comment = `Failure: ${msgAttr ? msgAttr[1] : bodyText || 'Test failed'}`;
-    } else if (skipMatch) {
+      const msgAttr =
+        attrStr.match(/\bmessage\s*=\s*"([^"]*)"/i) ||
+        attrStr.match(/\bmessage\s*=\s*'([^']*)'/i);
+      const bodyText = failMatch ? extractXmlElementText(failMatch[2]) : '';
+      const msgText = msgAttr ? decodeXmlEntities(msgAttr[1]) : '';
+      const combinedFail =
+        msgText && bodyText && bodyText !== msgText
+          ? `${msgText} — ${bodyText}`
+          : msgText || bodyText || 'Test failed';
+      comment = `Failure: ${combinedFail}`;
+    } else if (skipTagMatch) {
       rawStatus = 'skipped';
+      const skipAttr = skipTagMatch[1] || '';
+      const skipMsgAttr =
+        skipAttr.match(/\bmessage\s*=\s*"([^"]*)"/i) ||
+        skipAttr.match(/\bmessage\s*=\s*'([^']*)'/i);
+      const skipBody = skipTagMatch[2] ? extractXmlElementText(skipTagMatch[2]) : '';
+      const skipMsg = skipMsgAttr ? decodeXmlEntities(skipMsgAttr[1]) : skipBody;
+      if (skipMsg) {
+        comment = `Skipped: ${skipMsg}`;
+      }
     }
 
-    const testKey = extractTestKey(title, projectKey);
+    const propMatch =
+      inner.match(/<property\b[^>]*\bname\s*=\s*["']test_key["'][^>]*\bvalue\s*=\s*["']([^"']+)["']/i) ||
+      inner.match(/<property\b[^>]*\bvalue\s*=\s*["']([^"']+)["'][^>]*\bname\s*=\s*["']test_key["']/i);
+    const testKey =
+      extractTestKey(title, projectKey) ||
+      (propMatch ? extractTestKey(propMatch[1], projectKey) : null) ||
+      extractTestKey(className, projectKey);
     if (!testKey) {
       unmappedTests.push({ title, status: rawStatus });
       continue;

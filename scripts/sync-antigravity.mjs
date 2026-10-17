@@ -146,6 +146,34 @@ export function parseSkillDocument(content) {
   };
 }
 
+function stripFencedCodeBlocks(markdown) {
+  const lines = String(markdown || '').split(/\r?\n/);
+  const kept = [];
+  let activeFence = null;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!activeFence) {
+      const openMatch = trimmed.match(/^(`{3,})[^`]*$/) || trimmed.match(/^(~{3,}).*$/);
+      if (openMatch) {
+        const fence = openMatch[1];
+        activeFence = { char: fence[0], len: fence.length };
+        continue;
+      }
+      kept.push(line);
+    } else {
+      const closeMatch = trimmed.match(/^(`{3,}|~{3,})\s*$/);
+      if (
+        closeMatch &&
+        closeMatch[1][0] === activeFence.char &&
+        closeMatch[1].length >= activeFence.len
+      ) {
+        activeFence = null;
+      }
+    }
+  }
+  return kept.join('\n');
+}
+
 /**
  * Strips fenced code blocks for general Markdown links/inline tokens, then resolves:
  *   1. Markdown link Context Pointers `[label](target)`
@@ -154,7 +182,7 @@ export function parseSkillDocument(content) {
  *   4. CLI script invocations `node scripts/...` across both inline code spans and fenced code blocks
  */
 export function resolveContextPointers(content, { sourceFile, repoRoot }) {
-  const withoutFenced = content.replace(/```[\s\S]*?```/g, '');
+  const withoutFenced = stripFencedCodeBlocks(content).replace(/<!--[\s\S]*?-->/g, '');
   const pointers = [];
   const brokenPointers = [];
   const seenResolved = new Set();
@@ -181,7 +209,13 @@ export function resolveContextPointers(content, { sourceFile, repoRoot }) {
     const linkTarget = match[3];
 
     if (linkTarget) {
-      const rawTarget = linkTarget.trim().split('#')[0];
+      const rawTarget = linkTarget
+        .trim()
+        .split(/\s+["']/)[0]
+        .trim()
+        .replace(/^<([^<>]+)>$/, '$1')
+        .split('#')[0]
+        .trim();
       if (
         !rawTarget ||
         rawTarget.startsWith('http://') ||
@@ -262,7 +296,7 @@ export const VIEWER_CORE_END_MARKER = '/* __VIEWER_CORE_END__ */';
 
 export function buildBrowserViewerCoreScript(viewerCoreSource) {
   const browserReady = String(viewerCoreSource || '')
-    .replace(/^export\s+(const|let|function)\b/gm, '$1')
+    .replace(/^export\s+((?:async\s+)?(?:const|let|function|class))\b/gm, '$1')
     .trim();
   return `${VIEWER_CORE_START_MARKER}\n${browserReady}\n${VIEWER_CORE_END_MARKER}`;
 }
@@ -278,6 +312,7 @@ export function syncViewerBundles(rootDir, { checkOnly = false } = {}) {
   for (const relBundle of [
     path.join('scripts', 'bugs-viewer', 'bundle.html'),
     path.join('scripts', 'execution-viewer', 'bundle.html'),
+    path.join('scripts', 'testcases-viewer', 'bundle.html'),
   ]) {
     const absBundle = path.join(rootDir, relBundle);
     if (!fs.existsSync(absBundle)) continue;

@@ -84,7 +84,10 @@ export function splitCells(line) {
 }
 
 export function isSeparatorRow(line) {
-  return /^\|?[\s:|-]+\|?$/.test(line) && line.includes('-');
+  const s = String(line || '').trim();
+  if (!/^\|?[\s:|-]+\|?$/.test(s) || !s.includes('-')) return false;
+  const cells = splitCells(s);
+  return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
 }
 
 export function cleanGroupName(raw) {
@@ -94,20 +97,77 @@ export function cleanGroupName(raw) {
     .trim();
 }
 
+function stepCodeFence(trimmed, activeFence) {
+  if (!activeFence) {
+    const openMatch = trimmed.match(/^(`{3,})[^`]*$/) || trimmed.match(/^(~{3,}).*$/);
+    if (openMatch) {
+      const fence = openMatch[1];
+      return { isFenceLine: true, nextFence: { char: fence[0], len: fence.length } };
+    }
+    return { isFenceLine: false, nextFence: null };
+  }
+  const closeMatch = trimmed.match(/^(`{3,}|~{3,})\s*$/);
+  if (
+    closeMatch &&
+    closeMatch[1][0] === activeFence.char &&
+    closeMatch[1].length >= activeFence.len
+  ) {
+    return { isFenceLine: true, nextFence: null };
+  }
+  return { isFenceLine: false, nextFence: activeFence };
+}
+
+function extractFirstH1(contentOrLines, preferBugPrefix = false) {
+  const lines = Array.isArray(contentOrLines)
+    ? contentOrLines
+    : String(contentOrLines || '').split(/\r?\n/);
+  let fenceState = null;
+  let fallbackH1 = '';
+  for (const line of lines) {
+    const stepped = stepCodeFence(line.trim(), fenceState);
+    fenceState = stepped.nextFence;
+    if (stepped.isFenceLine || fenceState) continue;
+    if (preferBugPrefix) {
+      const mBug = line.match(/^#\s*\[BUG\]\s*(.*)$/);
+      if (mBug && mBug[1].trim()) return mBug[1].trim();
+    }
+    if (!fallbackH1) {
+      const mH1 = line.match(/^#\s+(.+)/);
+      if (mH1 && mH1[1].trim()) {
+        fallbackH1 = mH1[1].trim();
+        if (!preferBugPrefix) return fallbackH1;
+      }
+    }
+  }
+  return fallbackH1;
+}
+
 /**
  * Parses all pipe-escaped Markdown tables in a document.
  * Preserves both `headers` and `header` aliases for compatibility across all 3 viewers.
  */
-export function parseMarkdownTables(contentOrLines) {
+export function parseMarkdownTables(contentOrLines, options = {}) {
+  const ignoreCodeFences = Boolean(options && options.ignoreCodeFences);
   const lines = Array.isArray(contentOrLines)
     ? contentOrLines
     : String(contentOrLines || '').split(/\r?\n/);
   const tables = [];
   let currentHeading = '';
+  let fenceState = null;
   let i = 0;
 
   while (i < lines.length) {
     const line = lines[i];
+    const trimmed = line.trim();
+    if (ignoreCodeFences) {
+      const stepped = stepCodeFence(trimmed, fenceState);
+      fenceState = stepped.nextFence;
+      if (stepped.isFenceLine || fenceState) {
+        i++;
+        continue;
+      }
+    }
+
     const heading = line.match(/^(#{1,4})\s+(.+)/);
     if (heading) {
       // Top-level H1 is document title; H2..H4 are section/group headings
@@ -118,7 +178,6 @@ export function parseMarkdownTables(contentOrLines) {
       continue;
     }
 
-    const trimmed = line.trim();
     if (trimmed.startsWith('|') && i + 1 < lines.length && isSeparatorRow(lines[i + 1].trim())) {
       const headers = splitCells(trimmed).map(cleanCell);
       const rows = [];
@@ -148,7 +207,14 @@ export function splitSections(text) {
   const lines = String(text || '').split(/\r?\n/);
   const sec = { _pre: [] };
   let cur = '_pre';
+  let fenceState = null;
   for (const line of lines) {
+    const stepped = stepCodeFence(line.trim(), fenceState);
+    fenceState = stepped.nextFence;
+    if (stepped.isFenceLine || fenceState) {
+      sec[cur].push(line);
+      continue;
+    }
     const m = line.match(/^##\s+(.*)$/);
     if (m) {
       cur = m[1].trim();
@@ -162,13 +228,82 @@ export function splitSections(text) {
 
 export function extractBoldKV(lines) {
   const o = {};
+  let currentKey = '';
+  let currentHasInlineValue = false;
+  let sawBlank = false;
+  let fenceState = null;
+  let inHtmlComment = false;
   for (const raw of lines || []) {
-    const line = raw.replace(/^-\s+/, '').trim();
-    const m = line.match(/^\*\*([^*]+?):\*\*\s*(.*)$/);
-    if (m) {
-      const k = m[1].trim();
-      const v = m[2].trim();
-      if (v || !(k in o)) o[k] = v;
+    const rawStr = String(raw || '');
+    const trimmed = rawStr.trim();
+    const stepped = stepCodeFence(trimmed, fenceState);
+    fenceState = stepped.nextFence;
+    if (stepped.isFenceLine) {
+      if (currentKey) {
+        o[currentKey] = o[currentKey] ? `${o[currentKey]}\n${trimmed}` : trimmed;
+        sawBlank = false;
+      }
+      continue;
+    }
+    if (fenceState) {
+      if (currentKey) {
+        const fenceLine = rawStr.trimEnd();
+        o[currentKey] = o[currentKey] ? `${o[currentKey]}\n${fenceLine}` : fenceLine;
+      }
+      continue;
+    }
+    if (inHtmlComment) {
+      if (trimmed.includes('-->')) inHtmlComment = false;
+      continue;
+    }
+    if (trimmed.startsWith('<!--')) {
+      if (!trimmed.includes('-->')) inHtmlComment = true;
+      continue;
+    }
+    if (!trimmed) {
+      sawBlank = true;
+      continue;
+    }
+    if (trimmed.startsWith('|')) {
+      currentKey = '';
+      currentHasInlineValue = false;
+      sawBlank = false;
+      continue;
+    }
+    if (/^(?:#{1,6}\s+|---+|\*\*\*+|___+|>\s*)/.test(trimmed)) {
+      currentKey = '';
+      currentHasInlineValue = false;
+      sawBlank = false;
+      continue;
+    }
+    const indent = (rawStr.match(/^[ \t]+/) || [''])[0].replace(/\t/g, '  ').length;
+    if (indent < 2) {
+      const line = trimmed.replace(/^[-*+]\s+/, '').trim();
+      const m =
+        line.match(/^\*\*([^*]+?)([:?])\*\*\s*(.*)$/) ||
+        line.match(/^\*\*([^*]+?)\*\*\s*([:?])\s*(.*)$/);
+      if (m) {
+        const k = m[2] === '?' ? `${m[1].trim()}?` : m[1].trim();
+        const v = m[3].trim();
+        currentKey = k;
+        currentHasInlineValue = Boolean(v);
+        sawBlank = false;
+        if (v || !(k in o)) o[k] = v;
+        continue;
+      }
+    }
+    if (currentKey) {
+      const isListContinuation = /^[-*+]\s+|^\d+\.\s+/.test(trimmed);
+      if (
+        indent < 2 &&
+        (currentHasInlineValue || (sawBlank && o[currentKey] && !isListContinuation))
+      ) {
+        currentKey = '';
+        currentHasInlineValue = false;
+        continue;
+      }
+      o[currentKey] = o[currentKey] ? `${o[currentKey]}\n${trimmed}` : trimmed;
+      sawBlank = false;
     }
   }
   return o;
@@ -226,12 +361,23 @@ export const TESTCASE_COLUMN_WIDTHS = [20, 16, 10, 10, 42, 26, 52, 26, 52, 10, 1
 
 export const PRIORITY_ORDER = {
   critical: 0,
+  'nghiêm trọng': 0,
+  p0: 0,
   high: 1,
+  cao: 1,
+  p1: 1,
   medium: 2,
+  'trung bình': 2,
+  p2: 2,
   low: 3,
+  thấp: 3,
+  p3: 3,
+  p4: 4,
 };
 
 export const RISK_ORDER = {
+  critical: -1,
+  'nghiêm trọng': -1,
   high: 0,
   cao: 0,
   medium: 1,
@@ -239,6 +385,36 @@ export const RISK_ORDER = {
   low: 2,
   thấp: 2,
 };
+
+const PRIORITY_BUCKET_MAP = {
+  critical: 'critical',
+  'nghiêm trọng': 'critical',
+  p0: 'critical',
+  high: 'high',
+  cao: 'high',
+  p1: 'high',
+  medium: 'medium',
+  'trung bình': 'medium',
+  p2: 'medium',
+  low: 'low',
+  thấp: 'low',
+  p3: 'low',
+  p4: 'low',
+};
+
+const VI_PRIORITY_QUERY_MAP = {
+  'nghiêm trọng': 'critical',
+  cao: 'high',
+  'trung bình': 'medium',
+  thấp: 'low',
+};
+
+function normalizePriorityToken(raw) {
+  return String(raw || '')
+    .toLowerCase()
+    .replace(/^[^a-z0-9à-ỹ]+/i, '')
+    .trim();
+}
 
 function tcColumnKey(header) {
   const h = String(header || '')
@@ -278,16 +454,9 @@ export function parseGroupScopeKey(scopeKey) {
 
 export function parseMarkdownFile(fileName, content) {
   const lines = String(content || '').split(/\r?\n/);
-  let docTitle = fileName.replace(/\.md$/i, '');
-  for (const line of lines) {
-    const h1 = line.match(/^#\s+(.+)/);
-    if (h1) {
-      docTitle = h1[1].trim();
-      break;
-    }
-  }
+  const docTitle = extractFirstH1(lines) || fileName.replace(/\.md$/i, '');
 
-  const tables = parseMarkdownTables(lines);
+  const tables = parseMarkdownTables(lines, { ignoreCodeFences: true });
   const testCases = [];
   let seq = 0;
 
@@ -343,8 +512,13 @@ export function queryTestCases(parsedFiles, query = {}) {
 
   const q = (query.search ?? '').trim().toLowerCase();
   const scopeKey = query.scopeKey ?? '';
-  const prioritySet = new Set([...(query.priorities ?? [])].map((p) => p.toLowerCase()));
-  const autoFilter = (query.automatable ?? '').toLowerCase();
+  const prioritySet = new Set(
+    [...(query.priorities ?? [])].map((p) => {
+      const tok = normalizePriorityToken(p);
+      return VI_PRIORITY_QUERY_MAP[tok] || tok;
+    })
+  );
+  const autoFilter = normalizePriorityToken(query.automatable ?? '');
   const tagFilter = query.tag ?? '';
   const sort = query.sort ?? { key: 'id', dir: 1 };
 
@@ -356,10 +530,24 @@ export function queryTestCases(parsedFiles, query = {}) {
     );
   }
   if (prioritySet.size > 0) {
-    rows = rows.filter((tc) => prioritySet.has(tc.priority.toLowerCase()));
+    rows = rows.filter((tc) => {
+      const rawLower = tc.priority.toLowerCase();
+      const tok = normalizePriorityToken(tc.priority);
+      const bucket = PRIORITY_BUCKET_MAP[tok] || tok;
+      return prioritySet.has(rawLower) || prioritySet.has(tok) || prioritySet.has(bucket);
+    });
   }
   if (autoFilter) {
-    rows = rows.filter((tc) => tc.automatable.toLowerCase() === autoFilter);
+    rows = rows.filter((tc) => {
+      const a = normalizePriorityToken(tc.automatable);
+      if (autoFilter === 'yes' || autoFilter === 'có' || autoFilter === 'co') {
+        return a === 'yes' || a === 'có' || a === 'co';
+      }
+      if (autoFilter === 'no' || autoFilter === 'không' || autoFilter === 'khong') {
+        return a === 'no' || a === 'không' || a === 'khong';
+      }
+      return a === autoFilter;
+    });
   }
   if (tagFilter) {
     rows = rows.filter((tc) => tc.tags.includes(tagFilter));
@@ -393,12 +581,13 @@ export function queryTestCases(parsedFiles, query = {}) {
         return compareText(a.group, b.group);
       case 'priority':
         return (
-          (PRIORITY_ORDER[a.priority.toLowerCase()] ?? 9) -
-          (PRIORITY_ORDER[b.priority.toLowerCase()] ?? 9)
+          (PRIORITY_ORDER[normalizePriorityToken(a.priority)] ?? 9) -
+          (PRIORITY_ORDER[normalizePriorityToken(b.priority)] ?? 9)
         );
       case 'risk':
         return (
-          (RISK_ORDER[a.risk.toLowerCase()] ?? 9) - (RISK_ORDER[b.risk.toLowerCase()] ?? 9)
+          (RISK_ORDER[normalizePriorityToken(a.risk)] ?? 9) -
+          (RISK_ORDER[normalizePriorityToken(b.risk)] ?? 9)
         );
       default:
         return compareTcId(a.id, b.id);
@@ -409,7 +598,8 @@ export function queryTestCases(parsedFiles, query = {}) {
 
   const stats = {};
   for (const tc of filtered) {
-    const p = tc.priority.toLowerCase() || 'khác';
+    const tok = normalizePriorityToken(tc.priority);
+    const p = PRIORITY_BUCKET_MAP[tok] || tok || 'khác';
     stats[p] = (stats[p] ?? 0) + 1;
   }
 
@@ -451,6 +641,7 @@ export function buildTestCasesExportPlan(cases, baseName = 'test_cases') {
     {
       name: 'Tổng hợp',
       statusCol: 9,
+      statusCols: [3, 9, 10],
       widths: TESTCASE_COLUMN_WIDTHS,
       head,
       rows: cases.map(tcRowOf),
@@ -462,6 +653,7 @@ export function buildTestCasesExportPlan(cases, baseName = 'test_cases') {
       sheets.push({
         name: g.replace(/^Nhóm\s+/i, ''),
         statusCol: 9,
+        statusCols: [3, 9, 10],
         widths: TESTCASE_COLUMN_WIDTHS,
         head,
         rows,
@@ -506,6 +698,31 @@ export const BUG_RANKS = {
   status: ALL_BUG_ST.reduce((o, s, i) => ((o[s] = i), o), {}),
 };
 
+export function classifyBugStatus(rawStatus) {
+  const s = stripMd(rawStatus || '');
+  if (!s) return 'OPEN';
+  if (/một phần|\bpartial\b/i.test(s)) return 'PARTIAL';
+  if (/không verify|khong verify|cannot[_ ]?verify/i.test(s)) return 'CANNOT_VERIFY';
+  if (/chờ retest|cho retest|\bpending\b/i.test(s)) return 'PENDING';
+  if (/rà lại|ra lai|needs[_ ]?review/i.test(s)) return 'NEEDS_REVIEW';
+  if (/đóng|\bclosed\b|(?<!not[_ ])\bfixed\b|🟢|✅/i.test(s)) return 'CLOSED';
+  if (/đã fix|da fix/i.test(s)) return 'PENDING';
+  return 'OPEN';
+}
+
+function extractBugModule(bugId, fallbackMod = 'unknown') {
+  const rawId = String(bugId || '').trim();
+  const m =
+    rawId.match(/^BUG_([a-z][a-z0-9_-]*?)_\d+(?:_|$)/i) ||
+    rawId.match(/^BUG_([a-z][a-z0-9-]*?)_/i);
+  const candidate = m ? m[1].toLowerCase() : '';
+  if (candidate && !/^tc_?\d*$/i.test(candidate)) {
+    return candidate;
+  }
+  const fb = stripMd(fallbackMod || '').trim().toLowerCase();
+  return fb || 'unknown';
+}
+
 function findKey(o, res) {
   for (const re of res) {
     for (const k of Object.keys(o)) {
@@ -516,30 +733,43 @@ function findKey(o, res) {
 }
 
 export function isBugFile(text) {
-  return /\*\*ID:\*\*\s*BUG_/.test(String(text || ''));
+  return /\*\*(?:ID|Mã\s*bug|Bug\s*ID)(?::\*\*|\*\*\s*:)\s*[`*'"]*BUG_/i.test(
+    String(text || '')
+  );
 }
 
 export function parseBugFile(text, fileName) {
   const raw = String(text || '');
-  const titleLine =
-    (raw.match(/^#\s*\[BUG\]\s*(.*)$/m) || [, ''])[1].trim() ||
-    (raw.match(/^#\s+(.*)$/m) || [, ''])[1].trim();
+  const titleLine = extractFirstH1(raw, true);
   const sec = splitSections(raw);
   const infoKV = extractBoldKV(sec['Thông tin chung'] || []);
   const noteKV = extractBoldKV(sec['Ghi chú thêm'] || []);
 
-  const id = (infoKV['ID'] || String(fileName || '').replace(/\.md$/, '')).trim();
-  const module = (id.match(/^BUG_([^_]+)_/i) || [, 'unknown'])[1].toLowerCase();
-  const sevRaw = infoKV['Severity'] || '';
+  const id = (
+    stripMd(findKey(infoKV, [/^id$/i, /^mã\s*bug$/i, /^bug\s*id$/i])) ||
+    String(fileName || '').replace(/\.md$/i, '')
+  ).trim();
+  const module = extractBugModule(
+    id,
+    findKey(infoKV, [/^module$/i, /module|phân hệ/i]) || 'unknown'
+  );
+  const sevRaw = findKey(infoKV, [/^severity$/i, /severity|mức độ nghiêm trọng/i]) || '';
   const severity = (SEV_MAP.find(([re]) => re.test(sevRaw)) || [, ''])[1];
-  const prioRaw = infoKV['Priority'] || '';
+  const prioRaw =
+    findKey(infoKV, [/^priority$/i, /priority|độ ưu tiên|mức độ ưu tiên/i]) || '';
   const priority = (prioRaw.match(/P[1-3]/i) || [''])[0].toUpperCase();
+  const statusRaw = stripMd(
+    findKey(infoKV, [/^trạng thái$/i, /^status$/i, /trạng thái|status/i]) || ''
+  );
+  const jiraIssue =
+    stripMd(findKey(infoKV, [/^jira\s*(?:issue|key)$/i]) || '') ||
+    (statusRaw.match(/\(([A-Z][A-Z0-9_]+-\d+)\)/) || [, ''])[1];
   const execRuns = Object.keys(infoKV)
     .filter((k) => /execution run/i.test(k))
     .map((k) => `${k}: ${infoKV[k]}`)
     .join('\n');
 
-  const rtabs = parseMarkdownTables(sec['Lịch sử retest'] || []);
+  const rtabs = parseMarkdownTables(sec['Lịch sử retest'] || [], { ignoreCodeFences: true });
   const rtab = rtabs.find(
     (t) => colIdx(t.header, /ngày/i) >= 0 && colIdx(t.header, /kết quả/i) >= 0
   );
@@ -564,7 +794,7 @@ export function parseBugFile(text, fileName) {
     }
   }
 
-  let status = 'OPEN';
+  let status = statusRaw ? classifyBugStatus(statusRaw) : 'OPEN';
   if (retest.length) {
     const latest = retest[0].resultCode;
     status =
@@ -587,35 +817,52 @@ export function parseBugFile(text, fileName) {
     severity,
     priorityRaw: prioRaw,
     priority,
-    env: infoKV['Môi trường'] || '',
-    build: infoKV['Build / Version'] || infoKV['Build'] || '',
-    tc: stripMd(infoKV['Test case liên quan'] || ''),
-    req: stripMd(infoKV['REQ ID liên quan'] || infoKV['Requirement'] || ''),
-    testData: infoKV['Test data đã dùng'] || '',
-    dateFound: infoKV['Ngày phát hiện'] || '',
+    jiraIssue,
+    env: stripMd(findKey(infoKV, [/^môi trường$/i, /môi trường|environment/i]) || ''),
+    build: stripMd(
+      findKey(infoKV, [/^build\s*\/\s*version$/i, /^build$/i, /build|version|phiên bản/i]) || ''
+    ),
+    tc: stripMd(
+      findKey(infoKV, [/^test case liên quan$/i, /test case|tc liên quan/i]) || ''
+    ),
+    req: stripMd(
+      findKey(infoKV, [/^req id liên quan$/i, /^requirement$/i, /req id|requirement/i]) || ''
+    ),
+    testData: findKey(infoKV, [/^test data đã dùng$/i, /test data|dữ liệu test/i]) || '',
+    dateFound: stripMd(
+      findKey(infoKV, [/^ngày phát hiện$/i, /ngày phát hiện|date found/i]) || ''
+    ),
     executionRun: execRuns,
     steps: (sec['Steps to Reproduce'] || []).join('\n').trim(),
     expected: (sec['Expected Result'] || []).join('\n').trim(),
     actual: (sec['Actual Result'] || []).join('\n').trim(),
     evidenceRaw: (sec['Evidence'] || []).join('\n').trim(),
-    freq: noteKV['Tần suất tái hiện'] || '',
-    workaround: findKey(noteKV, [/^workaround/i]) || '',
-    rootCause: findKey(noteKV, [/root cause/i]) || '',
-    proposedFix: findKey(noteKV, [/đề xuất fix/i]) || '',
-    verifyAfterFix: findKey(noteKV, [/cách verify sau khi fix/i]) || '',
+    freq: findKey(noteKV, [/^tần suất tái hiện$/i, /tần suất/i]) || '',
+    workaround: findKey(noteKV, [/^workaround/i, /workaround|giải pháp tạm/i]) || '',
+    rootCause: findKey(noteKV, [/root cause|nguyên nhân gốc/i]) || '',
+    proposedFix:
+      findKey(noteKV, [/đề xuất\s*fix|^đề xuất\b|hướng khắc phục/i]) || '',
+    verifyAfterFix: findKey(noteKV, [/cách verify sau khi fix|verify sau khi fix/i]) || '',
     notesOther: Object.entries(noteKV)
-      .filter(([k]) => !/tần suất|workaround|root cause|đề xuất fix|verify sau khi fix/i.test(k))
+      .filter(
+        ([k]) =>
+          !/tần suất|workaround|giải pháp tạm|root cause|nguyên nhân gốc|đề xuất\s*fix|^đề xuất\b|hướng khắc phục|verify sau khi fix/i.test(
+            k
+          )
+      )
       .map(([k, v]) => `${k}: ${v}`)
       .join('\n'),
     retest,
     retestCount: retest.length,
     status,
-    statusRaw: '',
+    statusRaw,
   };
 }
 
 export function parseBugIndex(text, fileName) {
-  const tables = parseMarkdownTables(String(text || '').split(/\r?\n/));
+  const tables = parseMarkdownTables(String(text || '').split(/\r?\n/), {
+    ignoreCodeFences: true,
+  });
   const t = tables.find(
     (tb) => colIdx(tb.header, /mã bug/i) >= 0 && colIdx(tb.header, /trạng thái/i) >= 0
   );
@@ -635,26 +882,23 @@ export function parseBugIndex(text, fileName) {
       const id = (m ? m[1] : stripMd(rawId)).trim();
       if (!id) continue;
       const statusRaw = stripMd(r[iSt] || '');
-      let status = 'OPEN';
-      if (/đóng/i.test(statusRaw)) status = 'CLOSED';
-      else if (/chờ retest|đã fix/i.test(statusRaw)) status = 'PENDING';
-      else if (/rà lại/i.test(statusRaw)) status = 'NEEDS_REVIEW';
+      const status = classifyBugStatus(statusRaw);
       const sevRaw = stripMd(r[iSev] || '');
       const severity = (SEV_MAP.find(([re]) => re.test(sevRaw)) || [, ''])[1];
       const prioRaw = stripMd(r[iPrio] || '');
       const priority = (prioRaw.match(/P[1-3]/i) || [''])[0].toUpperCase();
+      const jiraIssue = (statusRaw.match(/\(([A-Z][A-Z0-9_]+-\d+)\)/) || [, ''])[1];
       out.push({
         kind: 'summary',
         fileName,
         id,
-        module: (
-          id.match(/^BUG_([^_]+)_/i) || [, stripMd(r[iMod] || 'unknown')]
-        )[1].toLowerCase(),
+        module: extractBugModule(id, iMod >= 0 ? r[iMod] : 'unknown'),
         title: stripMd(r[iTitle] || ''),
         severityRaw: sevRaw,
         severity,
         priorityRaw: prioRaw,
         priority,
+        jiraIssue,
         env: '',
         build: '',
         tc: stripMd(r[iTc] || ''),
@@ -688,11 +932,38 @@ export function parseBugIndex(text, fileName) {
   return { rows: out, meta };
 }
 
+function mergeBugAndSummary(bugDoc, summaryDoc) {
+  const merged = { ...bugDoc };
+  if (!merged.jiraIssue && summaryDoc.jiraIssue) merged.jiraIssue = summaryDoc.jiraIssue;
+  if (!merged.statusRaw && summaryDoc.statusRaw) merged.statusRaw = summaryDoc.statusRaw;
+  if (
+    (!merged.retest || merged.retest.length === 0) &&
+    merged.status === 'OPEN' &&
+    summaryDoc.status &&
+    summaryDoc.status !== 'OPEN'
+  ) {
+    merged.status = summaryDoc.status;
+  }
+  if (
+    (!merged.module || merged.module === 'unknown') &&
+    summaryDoc.module &&
+    summaryDoc.module !== 'unknown'
+  ) {
+    merged.module = summaryDoc.module;
+  }
+  return merged;
+}
+
 export function dedupeBugs(docs) {
   const byId = {};
   for (const d of docs) {
-    if (!byId[d.id] || (byId[d.id].kind === 'summary' && d.kind === 'bug')) {
+    const prev = byId[d.id];
+    if (!prev) {
       byId[d.id] = d;
+    } else if (prev.kind === 'summary' && d.kind === 'bug') {
+      byId[d.id] = mergeBugAndSummary(d, prev);
+    } else if (prev.kind === 'bug' && d.kind === 'summary') {
+      byId[d.id] = mergeBugAndSummary(prev, d);
     }
   }
   return Object.values(byId);
@@ -800,7 +1071,16 @@ export function buildBugsExportPlan(rows) {
   const widths = [28, 44, 14, 12, 10, 16, 20, 16, 14, 22, 10, 32];
   return {
     base: 'bug_report',
-    sheets: [{ name: 'Tổng hợp', statusCol: 5, widths, head, rows: sheetRows }],
+    sheets: [
+      {
+        name: 'Tổng hợp',
+        statusCol: 5,
+        statusCols: [3, 4, 5],
+        widths,
+        head,
+        rows: sheetRows,
+      },
+    ],
   };
 }
 
@@ -826,14 +1106,18 @@ const TCID_RE = /\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_TC_\d+(?:-[a-z0-9]+)?|TC_[A-Z0
 function isKVTable(t) {
   return (
     t.header.length === 2 &&
-    (t.header.every((h) => h === '') || /thông tin|thuộc tính|mục/i.test(t.header[0]))
+    (t.header.every((h) => h === '') ||
+      /thông tin|thuộc tính|mục|trường|field|key|property/i.test(t.header[0]))
   );
 }
 
 function kvOfTable(t) {
   const o = {};
   for (const r of t.rows) {
-    if (r[0]) o[r[0].replace(/[*`]/g, '')] = stripMd(r[1]);
+    if (r[0]) {
+      const k = r[0].replace(/[*`]/g, '').trim();
+      o[k] = /^evidence|bằng chứng$/i.test(k) ? cleanCell(r[1]) : stripMd(r[1]);
+    }
   }
   return o;
 }
@@ -870,11 +1154,26 @@ export function parseRtm(tables, fileName, title) {
           .map((s) => s.trim())
           .filter(Boolean);
         const auto = iAuto >= 0 ? stripMd(r[iAuto]) : '';
-        const m = auto.match(/\((\d+)\s*\/\s*(\d+)\)/);
-        const nAuto = auto ? (m ? +m[1] : tcs.length) : 0;
-        const nTc = m ? +m[2] : tcs.length;
         const declared = iSt >= 0 ? stripMd(r[iSt]) : '';
         const isOutOfScope = /out\s*of\s*scope|ngoài\s*phạm\s*vi/i.test(declared);
+        const isDeclaredUncovered = /uncovered|not\s*covered|chưa\s*có\s*tc/i.test(declared);
+        const isDeclaredManual = /manual(?:\s*only)?|mới\s*có\s*tc\s*thủ\s*công/i.test(declared);
+        const isDeclaredPartial = /\bpartial\b|automate\s*một\s*phần/i.test(declared);
+        const isNonAutoText =
+          !auto ||
+          /^(?:chưa\s*(?:automate|có|hỗ\s*trợ)|không(?:\s*có)?|none|no|false|manual(?:\s*only)?|0|❌|⚪)$/i.test(
+            auto
+          );
+        const m =
+          auto.match(/\((\d+)\s*\/\s*(\d+)\)/) || auto.match(/^(\d+)\s*\/\s*(\d+)$/);
+        const nTc = m ? +m[2] : tcs.length;
+        const nAuto = m
+          ? +m[1]
+          : isNonAutoText || isDeclaredManual || isDeclaredUncovered
+            ? 0
+            : isDeclaredPartial
+              ? Math.max(0, tcs.length - 1)
+              : tcs.length;
         rows.push({
           req,
           desc: iDesc >= 0 ? stripMd(r[iDesc]) : '',
@@ -885,11 +1184,11 @@ export function parseRtm(tables, fileName, title) {
           declared,
           status: isOutOfScope
             ? 'OUTOFSCOPE'
-            : tcs.length === 0
+            : tcs.length === 0 || isDeclaredUncovered
               ? 'NOTCOVERED'
-              : nAuto === 0
+              : nAuto === 0 || isDeclaredManual
                 ? 'MANUAL'
-                : nAuto < nTc
+                : nAuto < nTc || isDeclaredPartial
                   ? 'PARTIALCOV'
                   : 'FULL',
         });
@@ -965,9 +1264,9 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
 
   if (typeof rawOrTables === 'string') {
     lines = rawOrTables.split(/\r?\n/);
-    tables = parseMarkdownTables(lines);
+    tables = parseMarkdownTables(lines, { ignoreCodeFences: true });
     fileName = String(nameOrLines || '');
-    title = (lines.find((l) => /^#\s+/.test(l)) || '').replace(/^#\s+/, '').trim();
+    title = extractFirstH1(lines);
   } else {
     tables = Array.isArray(rawOrTables) ? rawOrTables : [];
     lines = Array.isArray(nameOrLines) ? nameOrLines : String(nameOrLines || '').split(/\r?\n/);
@@ -998,6 +1297,11 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
   const defectSummary = [];
   const openBugs = [];
   const rtmMetrics = [];
+
+  const isTotalSummaryLabel = (s) =>
+    /^(?:tổng(?:\s*cộng|\s*số|\s*hợp)?|total|grand\s*total|all\s*modules)$/i.test(
+      String(s || '').trim()
+    );
 
   for (const t of tables) {
     const H = t.header;
@@ -1047,9 +1351,11 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
     } else if (iMod >= 0 && iTotTc >= 0 && iRate >= 0) {
       for (const r of t.rows) {
         const mod = stripMd(r[iMod]);
-        if (!mod) continue;
+        if (!mod || isTotalSummaryLabel(mod)) continue;
         const srcVal = iSrc >= 0 ? stripMd(r[iSrc]) : '';
-        const prefVal = iPref >= 0 ? stripMd(r[iPref]) : mod.toUpperCase();
+        const mPref = mod.match(/\(`?([A-Z0-9_]+)`?\)/);
+        const prefVal =
+          iPref >= 0 ? stripMd(r[iPref]) : mPref ? mPref[1] : mod.toUpperCase();
         modules.push({
           module: mod,
           prefix: prefVal,
@@ -1069,7 +1375,7 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
       for (const r of t.rows) {
         const mod = stripMd(r[iMod]);
         const st = iSt >= 0 ? stripMd(r[iSt]) : '';
-        if (!mod || /^đã phủ 100%/i.test(st)) continue;
+        if (!mod || isTotalSummaryLabel(mod) || /^đã phủ 100%/i.test(st)) continue;
         const mPref = mod.match(/\(`?([A-Z0-9_]+)`?\)/);
         untested.push({
           module: mod,
@@ -1088,14 +1394,18 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
         const id = stripMd(r[iBugId]);
         if (!id) continue;
         const stRaw = iSt >= 0 ? stripMd(r[iSt]) : 'OPEN';
+        const bugStatus = classifyBugStatus(stRaw);
+        const modFromId = extractBugModule(id, '');
         openBugs.push({
           id,
-          module: iMod >= 0 ? stripMd(r[iMod]) : '',
+          module:
+            (iMod >= 0 ? stripMd(r[iMod]) : '') ||
+            (modFromId !== 'unknown' ? modFromId : ''),
           title: iTitle >= 0 ? stripMd(r[iTitle]) : '',
           severity: stripMd(r[iSev]),
           priority: iPrio >= 0 ? stripMd(r[iPrio]) : '',
           tcReq: iTcReq >= 0 ? stripMd(r[iTcReq]) : '',
-          status: /đóng|closed|fixed/i.test(stRaw) ? 'CLOSED' : 'OPEN',
+          status: bugStatus,
           statusRaw: stRaw,
         });
       }
@@ -1104,7 +1414,7 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
       const iClosed = colIdx(H, /đã đóng/i);
       for (const r of t.rows) {
         const sev = stripMd(r[iSev]);
-        if (!sev) continue;
+        if (!sev || isTotalSummaryLabel(sev)) continue;
         defectSummary.push({
           severity: sev,
           total: iTot >= 0 ? +(stripMd(r[iTot]) || 0) : 0,
@@ -1124,10 +1434,36 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
     }
   }
 
+  const modKeys = (rawMod, rawPref, bugId) => {
+    const keys = new Set();
+    for (const v of [rawMod, rawPref]) {
+      const s = String(v || '').trim().toLowerCase();
+      if (!s) continue;
+      keys.add(s);
+      const noParen = s.replace(/\s*\([^)]*\)\s*$/, '').trim();
+      if (noParen) keys.add(noParen);
+      const inParen = (s.match(/\(`?([a-z0-9_]+)`?\)/) || [, ''])[1];
+      if (inParen) keys.add(inParen);
+      const leaf = noParen.split('/').pop();
+      if (leaf) keys.add(leaf);
+    }
+    if (bugId) {
+      const fromId = extractBugModule(bugId, '');
+      if (fromId && fromId !== 'unknown') keys.add(fromId);
+    }
+    return keys;
+  };
+
   for (const m of modules) {
-    m.openBugs = openBugs.filter(
-      (b) => b.module.toLowerCase() === m.module.toLowerCase()
-    ).length;
+    const targetKeys = modKeys(m.module, m.prefix, '');
+    m.openBugs = openBugs.filter((b) => {
+      if (b.status === 'CLOSED') return false;
+      const bKeys = modKeys(b.module, '', b.id);
+      for (const k of bKeys) {
+        if (targetKeys.has(k)) return true;
+      }
+      return false;
+    }).length;
   }
 
   const total = modules.reduce((s, m) => s + m.total, 0);
@@ -1140,8 +1476,9 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
   const passRate = denom > 0 ? ((pass / denom) * 100).toFixed(1) + '%' : '—';
   const exitPassed = exitCriteria.filter((c) => c.status === 'PASS').length;
   const exitTotal = exitCriteria.length;
+  const activeOpenBugsCount = openBugs.filter((b) => b.status !== 'CLOSED').length;
   const openBugsTotal =
-    openBugs.length || defectSummary.reduce((s, d) => s + d.open, 0);
+    activeOpenBugsCount || defectSummary.reduce((s, d) => s + d.open, 0);
 
   if (!verdictBanner && exitTotal > 0) {
     verdict = exitPassed === exitTotal ? 'GO' : 'CONDITIONAL_GO';
@@ -1164,6 +1501,11 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
   };
 
   const scopeTitle = (title.split(/—|--/)[1] || '').trim();
+  const scopeMeta =
+    meta['Phạm vi · Mốc'] ||
+    meta['Phạm vi · Build · Môi trường'] ||
+    meta['Phạm vi'] ||
+    '';
   const summaryPayload = {
     verdict,
     verdictBanner,
@@ -1183,8 +1525,8 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
     kind: 'summary',
     fileName,
     title,
-    module: scopeTitle || meta['Phạm vi · Mốc'] || String(fileName || '').replace(/\.md$/, ''),
-    runId: meta['Phạm vi · Mốc'] || String(fileName || '').replace(/\.md$/, ''),
+    module: scopeTitle || scopeMeta || String(fileName || '').replace(/\.md$/, ''),
+    runId: scopeMeta || String(fileName || '').replace(/\.md$/, ''),
     build: '',
     meta,
     recommendation: verdict,
@@ -1206,9 +1548,9 @@ export function parseTestSummary(rawOrTables, nameOrLines = '', maybeFileName = 
 
 export function parseExecutionReport(text, fileName) {
   const lines = String(text || '').split(/\r?\n/);
-  const titleLine = (lines.find((l) => /^#\s+/.test(l)) || '').replace(/^#\s+/, '').trim();
+  const titleLine = extractFirstH1(lines);
   const isRetest = /retest/i.test(titleLine) || /retest/i.test(fileName);
-  const tables = parseMarkdownTables(lines);
+  const tables = parseMarkdownTables(lines, { ignoreCodeFences: true });
   if (/ma trận truy vết|traceability|\bRTM\b/i.test(titleLine) || /traceab|rtm/i.test(fileName)) {
     return parseRtm(tables, fileName, titleLine);
   }
@@ -1276,6 +1618,7 @@ export function parseExecutionReport(text, fileName) {
     const cnote = colIdx(t.header, /ghi chú|ghi chu/i);
     const cstep = colIdx(t.header, /bước fail|buoc fail/i);
     const cneed = colIdx(t.header, /cần gì|can gi/i);
+    const cev = colIdx(t.header, /evidence|bằng chứng|bang chung/i);
     for (const r of t.rows) {
       const id = stripMd(r[ci]);
       if (!id || /^-+$/.test(id)) continue;
@@ -1286,7 +1629,15 @@ export function parseExecutionReport(text, fileName) {
         o.blockReason = stripMd(r[cn]);
         if (!o.status) o.status = 'BLOCKED';
       }
-      if (cnote >= 0) o.note = stripMd(r[cnote]);
+      if (cev >= 0 && r[cev] && !PLACEHOLDER_RE.test(stripMd(r[cev]))) {
+        o.evidence = cleanCell(r[cev]);
+      }
+      if (cnote >= 0) {
+        o.note = stripMd(r[cnote]);
+        if (!o.evidence && extractEvidenceImages(r[cnote] || '').items.length > 0) {
+          o.evidence = cleanCell(r[cnote]);
+        }
+      }
       if (cstep >= 0) o.failStep = stripMd(r[cstep]);
       if (cneed >= 0) o.needToRun = stripMd(r[cneed]);
       if (/regression/i.test(t.heading)) o.isRegression = true;
@@ -1307,17 +1658,30 @@ export function parseExecutionReport(text, fileName) {
         : Object.keys(byId).find((k) => k.replace(/-[a-z0-9]+$/i, '') === baseMatchedId) ||
           rawMatchedId;
     const kv = kvOfTable(t);
+    const existingNote = byId[resolvedId]?.note || '';
+    const detailNote = kv['Ghi chú'] || '';
+    let mergedNote = '';
+    if (detailNote) {
+      if (!existingNote || /xem chi tiết/i.test(existingNote) || detailNote.includes(existingNote)) {
+        mergedNote = detailNote;
+      } else if (existingNote.includes(detailNote)) {
+        mergedNote = existingNote;
+      } else {
+        mergedNote = `${existingNote} — ${detailNote}`;
+      }
+    }
     add(resolvedId, {
       scenario: (t.heading.split('·')[1] || '').trim(),
       reqId: kv['REQ ID'] || '',
       priority: kv['Priority'] || '',
       expected: kv['Expected'] || kv['**Expected**'] || '',
       actual: kv['Actual'] || kv['**Actual**'] || kv['Actual lần này'] || '',
-      evidence: kv['Evidence'] || '',
+      evidence: kv['Evidence'] || kv['Bằng chứng'] || '',
       reproducible: kv['Tái hiện được?'] || '',
       suspect: kv['Nghi ngờ nguyên nhân'] || '',
       newBug: kv['Bug mới'] || '',
       failStep: kv['Bước fail'] || '',
+      ...(mergedNote ? { note: mergedNote } : {}),
     });
   }
 
@@ -1421,23 +1785,39 @@ export function extractDocTcStatusMap(d) {
   return map;
 }
 
+export function compareRunOrder(a, b) {
+  const numsA = [...String(a || '').matchAll(/\d+/g)].map((m) => Number(m[0]));
+  const numsB = [...String(b || '').matchAll(/\d+/g)].map((m) => Number(m[0]));
+  const len = Math.max(numsA.length, numsB.length);
+  for (let i = 0; i < len; i++) {
+    const na = numsA[i] ?? -1;
+    const nb = numsB[i] ?? -1;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
 export function computeExecutionTrend(docs) {
-  const runNum = (r) => {
-    const matches = [...String(r || '').matchAll(/(\d+)/g)];
-    return matches.length ? Number(matches[matches.length - 1][1]) : 0;
-  };
+  const normModKey = (m) =>
+    String(m || '')
+      .replace(/\s*\([^)]*\)/g, '')
+      .replace(/\s+\/\s+.*$/, '')
+      .trim()
+      .toLowerCase();
   const out = [];
   const byMod = {};
   for (const d of docs.filter((x) => x.kind !== 'rtm' && x.kind !== 'summary')) {
-    (byMod[d.module] = byMod[d.module] || []).push(d);
+    const key = normModKey(d.module) || String(d.module || '');
+    (byMod[key] = byMod[key] || []).push(d);
   }
-  for (const [mod, modDocs] of Object.entries(byMod)) {
+  for (const modDocs of Object.values(byMod)) {
     if (modDocs.length < 2) continue;
     const ordered = [...modDocs].sort(
       (a, b) =>
-        runNum(a.runId) - runNum(b.runId) ||
+        compareRunOrder(a.runId, b.runId) ||
         (a.isRetest ? 1 : 0) - (b.isRetest ? 1 : 0)
     );
+    const displayMod = ordered[0].module;
     const docMaps = ordered.map((d) => ({ run: d.runId, map: extractDocTcStatusMap(d) }));
     const ids = new Set(docMaps.flatMap((dm) => [...dm.map.keys()]));
     for (const id of ids) {
@@ -1455,7 +1835,7 @@ export function computeExecutionTrend(docs) {
       else if (prev === 'FAIL' && last === 'FAIL') grp = 'RECUR';
       else if (prev === 'FAIL' && last === 'PASS') grp = 'FIXEDTREND';
       else if (prev !== 'BLOCKED' && last === 'BLOCKED') grp = 'TOBLOCKED';
-      if (grp) out.push({ grp, id, module: mod, seq });
+      if (grp) out.push({ grp, id, module: displayMod, seq });
     }
   }
   const rank = { NEW: 0, RECUR: 1, TOBLOCKED: 2, FIXEDTREND: 3 };
@@ -1485,6 +1865,7 @@ export function buildExecutionExportPlan(arg = {}) {
       {
         name: 'Tiêu chí Exit',
         statusCol: 4,
+        statusCols: [4],
         widths: [6, 44, 16, 22, 14],
         head: ['#', 'Tiêu chí', 'Ngưỡng', 'Thực tế', 'Kết quả'],
         rows: exitCriteria.map((c) => [c.index, c.criterion, c.threshold, c.actual, c.status]),
@@ -1508,6 +1889,8 @@ export function buildExecutionExportPlan(arg = {}) {
     if (untested.length) {
       sheets.push({
         name: 'Vùng chưa kiểm thử',
+        statusCol: 3,
+        statusCols: [1, 3],
         widths: [20, 22, 44, 16],
         head: ['Module', 'Trạng thái', 'Nguyên nhân chưa kiểm thử', 'Mức rủi ro'],
         rows: untested.map((u) => [u.module, u.status, u.reason, u.risk]),
@@ -1517,6 +1900,7 @@ export function buildExecutionExportPlan(arg = {}) {
       sheets.push({
         name: 'Bug đang mở',
         statusCol: 6,
+        statusCols: [3, 4, 6],
         widths: [28, 16, 42, 14, 10, 24, 16],
         head: ['Mã Bug', 'Module', 'Tiêu đề', 'Severity', 'Priority', 'TC / REQ', 'Trạng thái'],
         rows: openBugs.map((b) => [
@@ -1547,6 +1931,7 @@ export function buildExecutionExportPlan(arg = {}) {
       {
         name: 'Tổng hợp',
         statusCol: 4,
+        statusCols: [4],
         widths: [16, 34, 30, 26, 20, 11, 9, 42],
         head: [
           'REQ ID',
@@ -1573,6 +1958,8 @@ export function buildExecutionExportPlan(arg = {}) {
     if (R.notAuto.length) {
       sheets.push({
         name: 'TC chưa automate',
+        statusCol: 1,
+        statusCols: [1],
         widths: [24, 12, 50],
         head: ['TC ID', 'Priority', 'Ghi chú'],
         rows: R.notAuto.map((i) => [i.id, i.priority, i.note]),
@@ -1597,6 +1984,8 @@ export function buildExecutionExportPlan(arg = {}) {
     if (R.undocumented.length) {
       sheets.push({
         name: 'Module chưa có tài liệu',
+        statusCol: 1,
+        statusCols: [1, 2],
         widths: [26, 20, 34],
         head: ['Module', 'Trạng thái', 'Rủi ro'],
         rows: R.undocumented.map((i) => [i.module, i.note, i.risk]),
@@ -1648,6 +2037,7 @@ export function buildExecutionExportPlan(arg = {}) {
         {
           name: 'Verify bug',
           statusCol: 1,
+          statusCols: [1, 5],
           widths: [26, 16, 18, 14, 20, 14, 24, 11, 40, 40, 26],
           head: [
             'Bug',
@@ -1702,13 +2092,16 @@ export function buildExecutionExportPlan(arg = {}) {
   ];
   const widths = [22, 34, 13, 18, 20, 12, 16, 10, 11, 40, 40, 32, 30, 26];
   const toRow = (t) => keys.map((k) => String(t[k] ?? ''));
-  const sheets = [{ name: 'Tổng hợp', statusCol: 2, widths, head, rows: tcRows.map(toRow) }];
+  const sheets = [
+    { name: 'Tổng hợp', statusCol: 2, statusCols: [2, 7], widths, head, rows: tcRows.map(toRow) },
+  ];
   const runs = [...new Set(tcRows.map((r) => r.runId))].filter(Boolean);
   if (runs.length > 1) {
     for (const r of runs) {
       sheets.push({
         name: r,
         statusCol: 2,
+        statusCols: [2, 7],
         widths,
         head,
         rows: tcRows.filter((x) => x.runId === r).map(toRow),
@@ -1725,10 +2118,13 @@ export function formatExportTimestamp(d = new Date()) {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-export function buildCsvString(plan) {
-  const s = plan.sheets[0];
+export function buildCsvString(planOrHead, maybeRows) {
+  const s =
+    Array.isArray(planOrHead) && Array.isArray(maybeRows)
+      ? { head: planOrHead, rows: maybeRows }
+      : planOrHead?.sheets?.[0] || planOrHead || { head: [], rows: [] };
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const body = [s.head, ...s.rows].map((r) => r.map(q).join(',')).join('\r\n');
+  const body = [s.head || [], ...(s.rows || [])].map((r) => r.map(q).join(',')).join('\r\n');
   return '\uFEFF' + body;
 }
 
@@ -1845,25 +2241,93 @@ export const XLSX_STATUS_STYLES = {
   PASS: 3,
   FIXED: 3,
   CLOSED: 3,
+  GO: 3,
   'Đã automate': 3,
+  'Đã đóng': 3,
+  Đạt: 3,
+  Yes: 3,
+  Có: 3,
   Low: 6,
+  Thấp: 6,
+  P3: 6,
+  P4: 6,
+  No: 6,
+  Không: 6,
   FAIL: 4,
   NOT_FIXED: 4,
   OPEN: 4,
+  'NO-GO': 4,
+  NO_GO: 4,
   Critical: 4,
+  'Nghiêm trọng': 4,
+  Blocker: 4,
+  P0: 4,
   'Chưa có TC': 4,
+  'Đang mở': 4,
+  'Chưa đạt': 4,
+  'Không đạt': 4,
   BLOCKED: 5,
   CANNOT_VERIFY: 5,
   PENDING: 5,
   NEEDS_REVIEW: 5,
+  CONDITIONAL: 5,
+  CONDITIONAL_GO: 5,
+  'CONDITIONAL-GO': 5,
+  'Go có điều kiện': 5,
   High: 5,
+  Cao: 5,
+  Major: 5,
+  P1: 5,
   'Mới có TC thủ công': 5,
+  'Chờ retest': 5,
+  'Đã fix': 5,
+  'Cần rà lại': 5,
+  'Không verify được': 5,
+  'Đạt có điều kiện': 5,
   SKIPPED: 6,
   'Ngoài phạm vi': 6,
   Medium: 6,
+  'Trung bình': 6,
+  Minor: 6,
+  Trivial: 6,
+  P2: 6,
   PARTIAL: 7,
+  'Một phần': 7,
   'Automate một phần': 7,
 };
+
+const XLSX_STATUS_STYLE_LOWER = new Map(
+  Object.entries(XLSX_STATUS_STYLES).map(([k, v]) => [k.toLowerCase(), v])
+);
+
+export function resolveXlsxStatusStyle(val) {
+  const raw = String(val ?? '').trim();
+  if (!raw) return undefined;
+  if (XLSX_STATUS_STYLES[raw] !== undefined) return XLSX_STATUS_STYLES[raw];
+  const lower = raw.toLowerCase();
+  if (XLSX_STATUS_STYLE_LOWER.has(lower)) return XLSX_STATUS_STYLE_LOWER.get(lower);
+  const unmd = raw.replace(/[*`~]+/g, '').trim();
+  if (unmd && XLSX_STATUS_STYLE_LOWER.has(unmd.toLowerCase())) {
+    return XLSX_STATUS_STYLE_LOWER.get(unmd.toLowerCase());
+  }
+  const stripped = unmd
+    .replace(/^[^A-Za-z0-9À-ỹ]+/, '')
+    .replace(/[^A-Za-z0-9À-ỹ)]+$/, '')
+    .trim();
+  if (stripped) {
+    if (XLSX_STATUS_STYLE_LOWER.has(stripped.toLowerCase())) {
+      return XLSX_STATUS_STYLE_LOWER.get(stripped.toLowerCase());
+    }
+    const withoutParen = stripped
+      .replace(/\s*\([^)]*\)\s*$/, '')
+      .replace(/[^A-Za-z0-9À-ỹ]+$/, '')
+      .trim();
+    if (withoutParen && XLSX_STATUS_STYLE_LOWER.has(withoutParen.toLowerCase())) {
+      return XLSX_STATUS_STYLE_LOWER.get(withoutParen.toLowerCase());
+    }
+  }
+  return undefined;
+}
 
 export const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="7"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FF166534"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FF991B1B"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FF92400E"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FF475569"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FF5B21B6"/><name val="Calibri"/></font></fonts><fills count="8"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2F7A29"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDCFCE7"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFEE2E2"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFEF3C7"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF1F5F9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEDE9FE"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="8"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" horizontal="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" horizontal="center" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="5" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" horizontal="center" wrapText="1"/></xf><xf numFmtId="0" fontId="5" fillId="6" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" horizontal="center" wrapText="1"/></xf><xf numFmtId="0" fontId="6" fillId="7" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" horizontal="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
@@ -1871,6 +2335,10 @@ export const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"
 export function buildSheetXml(sh) {
   const all = [sh.head, ...sh.rows];
   const last = colLetter(sh.head.length - 1);
+  const statusColSet = new Set([
+    ...(typeof sh.statusCol === 'number' ? [sh.statusCol] : []),
+    ...(Array.isArray(sh.statusCols) ? sh.statusCols : []),
+  ]);
   const body = all
     .map((cells, r) => {
       const n = r + 1;
@@ -1878,8 +2346,9 @@ export function buildSheetXml(sh) {
         .map((val, c) => {
           const v = String(val ?? '');
           let s = r === 0 ? 1 : 2;
-          if (r > 0 && c === sh.statusCol && XLSX_STATUS_STYLES[v] !== undefined) {
-            s = XLSX_STATUS_STYLES[v];
+          if (r > 0 && statusColSet.has(c)) {
+            const mappedStyle = resolveXlsxStatusStyle(v);
+            if (mappedStyle !== undefined) s = mappedStyle;
           }
           return v === ''
             ? `<c r="${colLetter(c)}${n}" s="${s}"/>`
@@ -1896,26 +2365,28 @@ export function buildSheetXml(sh) {
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>${body}</sheetData><autoFilter ref="A1:${last}${all.length}"/></worksheet>`;
 }
 
-export function safeSheetName(raw, taken) {
+export function safeSheetName(raw, taken = new Set()) {
   let n =
     String(raw || 'Sheet')
       .replace(/^Nhóm\s+/i, '')
-      .replace(/[:\\/?*[\]]/g, '-')
-      .trim() || 'Sheet';
-  if (n.length > 31) n = n.slice(0, 30).trim() + '…';
+      .replace(/[:\\/?*[\]\x00-\x1f]/g, '-')
+      .replace(/^[\s']+|[\s']+$/g, '') || 'Sheet';
+  if (/^history$/i.test(n)) n = 'History_Sheet';
+  if (n.length > 31) n = (n.slice(0, 30).replace(/[\s']+$/g, '') || 'Sheet') + '…';
   let c = n;
   let i = 2;
   while (taken.has(c.toLowerCase())) {
     const sfx = ` (${i++})`;
-    c = n.slice(0, 31 - sfx.length) + sfx;
+    c = (n.slice(0, 31 - sfx.length).replace(/[\s']+$/g, '') || 'Sheet') + sfx;
   }
   taken.add(c.toLowerCase());
   return c;
 }
 
-export function buildXlsxFiles(plan) {
+export function buildXlsxFiles(planOrSheets) {
+  const rawSheets = Array.isArray(planOrSheets) ? planOrSheets : planOrSheets?.sheets || [];
   const taken = new Set();
-  const sheets = plan.sheets.map((s) => ({ ...s, name: safeSheetName(s.name, taken) }));
+  const sheets = rawSheets.map((s) => ({ ...s, name: safeSheetName(s.name, taken) }));
   const ov = sheets
     .map(
       (_, i) =>
@@ -1960,4 +2431,89 @@ export function buildXlsxFiles(plan) {
 
 export function buildXlsxBytes(plan) {
   return zipStoreBytes(buildXlsxFiles(plan));
+}
+
+export const EVIDENCE_IMG_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
+
+export function evidenceBaseName(p) {
+  return String(p || '')
+    .split(/[\\/]/)
+    .pop()
+    .trim();
+}
+
+export function extractEvidenceImages(raw, imagesMap) {
+  const txt = String(raw || '');
+  const hasImg = (name) => {
+    const key = evidenceBaseName(name).toLowerCase();
+    if (!key || !imagesMap) return false;
+    if (typeof imagesMap.has === 'function') return imagesMap.has(key);
+    if (Array.isArray(imagesMap)) return imagesMap.some((x) => String(x).toLowerCase() === key);
+    return Boolean(imagesMap[key]);
+  };
+  const found = [];
+  const rest = txt
+    .replace(/!?\[[^\]]*\]\(([^)]+)\)/gi, (m, a) => {
+      const p = String(a || '')
+        .trim()
+        .split(/\s+["']/)[0]
+        .trim()
+        .replace(/^<|>$/g, '')
+        .trim();
+      if (p && EVIDENCE_IMG_RE.test(p)) found.push(p);
+      return ' ';
+    })
+    .replace(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi, (m, a) => {
+      const p = String(a || '').trim();
+      if (p && EVIDENCE_IMG_RE.test(p)) found.push(p);
+      return ' ';
+    });
+  for (const tok of rest.split(/[\s,;|]+/)) {
+    const hadBacktick = tok.includes('`');
+    const t = tok.trim().replace(/^[('"<`]+|[)'">`.,;]+$/g, '');
+    if (
+      t &&
+      EVIDENCE_IMG_RE.test(t) &&
+      (hasImg(t) || hadBacktick || /[\\/]/.test(t))
+    ) {
+      found.push(t);
+    }
+  }
+  const uniq = [...new Set(found)];
+  const items = uniq.map((path) => {
+    const baseName = evidenceBaseName(path);
+    const loaded = hasImg(baseName);
+    return { path, baseName, loaded };
+  });
+  const missingCount = items.filter((i) => !i.loaded).length;
+  return { items, missingCount };
+}
+
+export function escapeHtml(s) {
+  return String(s ?? '').replace(
+    /[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]
+  );
+}
+
+export function renderEvidenceHtml(raw, imagesMap, mode = 'execution') {
+  const txt = String(raw || '');
+  const { items, missingCount } = extractEvidenceImages(txt, imagesMap);
+  if (!items.length) {
+    const fallback = mode === 'bugs' ? escapeHtml(txt) || '—' : escapeHtml(txt);
+    return `<span class="v">${fallback}</span>`;
+  }
+  const chips = items
+    .map(({ baseName, loaded }) =>
+      loaded
+        ? `<button type="button" class="ev-chip" data-img="${escapeHtml(baseName)}" title="Bấm để xem ảnh">🖼 ${escapeHtml(baseName)}</button>`
+        : `<span class="ev-chip miss" title="Chưa nạp ảnh này vào viewer">🖼 ${escapeHtml(baseName)}</span>`
+    )
+    .join('');
+  const hint = missingCount
+    ? mode === 'bugs'
+      ? `<span class="ev-hint">Bug không có thư mục ảnh riêng — ảnh nằm ở <code>docs/executions/&lt;module&gt;/run_*/evidence/</code> của (các) lần chạy được link tới ở trên. Kéo thả thư mục <code>evidence/</code> đó (hoặc chính các file ảnh, khớp theo tên file nên kéo nhiều thư mục cùng lúc vẫn được) vào trang để xem được ${missingCount} ảnh còn thiếu.</span>`
+      : `<span class="ev-hint">Kéo thả thư mục <code>evidence/</code> (hoặc chính các file ảnh) vào trang để xem được ${missingCount} ảnh còn thiếu.</span>`
+    : '';
+  return `<span class="v">${chips}${hint}</span>`;
 }

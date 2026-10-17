@@ -26,7 +26,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 
 const EVIDENCE_LINK_RE =
-  /!?\[[^\]]*\]\(([^)\s]+\.(?:png|jpe?g|gif|webp|webm|mp4|zip|har|log|txt|json))\)/gi;
+  /(?:!?\[[^\]]*\]\(\s*<?([^)>?\s#"']+\.(?:png|jpe?g|gif|webp|svg|webm|mp4|zip|har|log|txt|json))>?(?:\s+["'][^"']*["'])?\s*\)|<img\b[^>]*\bsrc=["']([^"']+\.(?:png|jpe?g|gif|webp|svg))["']|`([^`\s]+\.(?:png|jpe?g|gif|webp|svg|webm|mp4|zip|har|log|txt|json))`)/gi;
 const REQ_ID_RE = /\bREQ-(?:[A-Z0-9]+-)+\d+\b/g;
 const TC_ID_RE = /\b[A-Z0-9_]+_TC_\d+(?:-[a-z0-9]+)?\b/g;
 
@@ -45,6 +45,9 @@ function mapJiraPriorityName(priorityRaw, severityKey) {
  */
 export function extractEvidencePaths(bugOrMarkdown, bugFilePath) {
   const baseDir = bugFilePath ? path.dirname(path.resolve(bugFilePath)) : process.cwd();
+  const docsMarker = `${path.sep}docs${path.sep}`;
+  const docsIdx = baseDir.lastIndexOf(docsMarker);
+  const repoRootFallback = docsIdx !== -1 ? baseDir.slice(0, docsIdx) : process.cwd();
   const seen = new Set();
   const resolvedPaths = [];
   const textSource =
@@ -60,12 +63,18 @@ export function extractEvidencePaths(bugOrMarkdown, bugFilePath) {
       : String(bugOrMarkdown || '');
 
   for (const match of textSource.matchAll(EVIDENCE_LINK_RE)) {
-    const rawRel = match[1].trim();
+    const rawRel = (match[1] || match[2] || match[3] || '').trim();
     if (!rawRel || rawRel.startsWith('http://') || rawRel.startsWith('https://')) continue;
-    const absPath = path.resolve(baseDir, rawRel);
-    if (!seen.has(absPath) && fs.existsSync(absPath) && fs.statSync(absPath).isFile()) {
-      seen.add(absPath);
-      resolvedPaths.push(absPath);
+    const candidates = [
+      path.resolve(baseDir, rawRel),
+      path.resolve(repoRootFallback, rawRel),
+    ];
+    for (const absPath of candidates) {
+      if (!seen.has(absPath) && fs.existsSync(absPath) && fs.statSync(absPath).isFile()) {
+        seen.add(absPath);
+        resolvedPaths.push(absPath);
+        break;
+      }
     }
   }
 
@@ -236,7 +245,9 @@ export function updateBugMarkdownWithJiraKey(filePath, issueKey) {
   const issueKeyRe = new RegExp(`\\b${escapeRegExp(issueKey)}\\b`);
 
   const lines = raw.split(/\r?\n/);
-  const jiraLineIdx = lines.findIndex((l) => /^\s*-\s*\*\*Jira (?:Issue|Key):\*\*/i.test(l));
+  const jiraLineIdx = lines.findIndex((l) =>
+    /^\s*[-*+]\s*\*\*Jira\s*(?:Issue|Key)(?::\*\*|\*\*\s*:)/i.test(l)
+  );
   if (jiraLineIdx !== -1) {
     if (issueKeyRe.test(lines[jiraLineIdx])) return false;
     lines[jiraLineIdx] = `- **Jira Issue:** ${issueKey}`;
@@ -244,7 +255,9 @@ export function updateBugMarkdownWithJiraKey(filePath, issueKey) {
     return true;
   }
 
-  const idIdx = lines.findIndex((l) => /^\s*-\s*\*\*ID:\*\*/i.test(l));
+  const idIdx = lines.findIndex((l) =>
+    /^\s*[-*+]\s*\*\*(?:ID|Mã\s*bug|Bug\s*ID)(?::\*\*|\*\*\s*:)/i.test(l)
+  );
   if (idIdx !== -1) {
     lines.splice(idIdx + 1, 0, `- **Jira Issue:** ${issueKey}`);
     fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
@@ -289,9 +302,12 @@ export function updateBugsCatalogWithJiraKey(bugsReadmePath, bugId, issueKey) {
         changed = true;
         return `| ${innerCells.join(' | ')} |`;
       }
-      if (issueKeyRe.test(line)) return line;
-      changed = true;
-      return `${line} (${issueKey})`;
+      if (/^[-*+]\s+/.test(trimmed)) {
+        if (issueKeyRe.test(line)) return line;
+        changed = true;
+        return `${line} (${issueKey})`;
+      }
+      return line;
     })
     .join('\n');
   if (!changed) return false;
@@ -299,10 +315,18 @@ export function updateBugsCatalogWithJiraKey(bugsReadmePath, bugId, issueKey) {
   return true;
 }
 
-function writeJiraKeyBackToBugFile(filePath, issueKey, bugId) {
+export function writeJiraKeyBackToBugFile(filePath, issueKey, bugId) {
+  const resolvedBugId =
+    bugId ||
+    (filePath && fs.existsSync(filePath)
+      ? parseBugMarkdown(fs.readFileSync(filePath, 'utf8'), path.basename(filePath)).id
+      : path.basename(String(filePath || ''), '.md'));
   updateBugMarkdownWithJiraKey(filePath, issueKey);
   const bugsReadmePath = path.resolve(path.dirname(filePath), '..', 'README.md');
-  updateBugsCatalogWithJiraKey(bugsReadmePath, bugId, issueKey);
+  if (!updateBugsCatalogWithJiraKey(bugsReadmePath, resolvedBugId, issueKey)) {
+    const parentReadmePath = path.resolve(path.dirname(filePath), '..', '..', 'README.md');
+    updateBugsCatalogWithJiraKey(parentReadmePath, resolvedBugId, issueKey);
+  }
 }
 
 /**

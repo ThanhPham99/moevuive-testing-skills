@@ -53,11 +53,22 @@ function MdText({ text, className = '' }: { text: string; className?: string }) 
 // ---------- Badge màu theo giá trị ----------
 const PRIORITY_STYLE: Record<string, string> = {
   critical: 'bg-red-50 text-red-700 border-red-200',
+  'nghiêm trọng': 'bg-red-50 text-red-700 border-red-200',
+  p0: 'bg-red-50 text-red-700 border-red-200',
   high: 'bg-orange-50 text-orange-700 border-orange-200',
+  cao: 'bg-orange-50 text-orange-700 border-orange-200',
+  p1: 'bg-orange-50 text-orange-700 border-orange-200',
   medium: 'bg-sky-50 text-sky-700 border-sky-200',
+  'trung bình': 'bg-sky-50 text-sky-700 border-sky-200',
+  p2: 'bg-sky-50 text-sky-700 border-sky-200',
   low: 'bg-slate-100 text-slate-600 border-slate-200',
+  thấp: 'bg-slate-100 text-slate-600 border-slate-200',
+  p3: 'bg-slate-100 text-slate-600 border-slate-200',
+  p4: 'bg-slate-100 text-slate-600 border-slate-200',
 }
 const RISK_STYLE: Record<string, string> = {
+  critical: 'bg-red-50 text-red-700 border-red-200',
+  'nghiêm trọng': 'bg-red-50 text-red-700 border-red-200',
   high: 'bg-red-50 text-red-700 border-red-200',
   cao: 'bg-red-50 text-red-700 border-red-200',
   medium: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -67,13 +78,17 @@ const RISK_STYLE: Record<string, string> = {
 }
 const AUTO_STYLE: Record<string, string> = {
   yes: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  có: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   partial: 'bg-amber-50 text-amber-700 border-amber-200',
+  'một phần': 'bg-amber-50 text-amber-700 border-amber-200',
   no: 'bg-rose-50 text-rose-700 border-rose-200',
+  không: 'bg-rose-50 text-rose-700 border-rose-200',
 }
 
 function Pill({ value, styles }: { value: string; styles: Record<string, string> }) {
   if (!value) return <span className="text-slate-300">—</span>
-  const cls = styles[value.toLowerCase()] ?? 'bg-slate-100 text-slate-600 border-slate-200'
+  const norm = value.toLowerCase().replace(/^[^a-z0-9à-ỹ]+/i, '').trim()
+  const cls = styles[norm] ?? styles[value.toLowerCase()] ?? 'bg-slate-100 text-slate-600 border-slate-200'
   return (
     <span className={`inline-block rounded-sm border px-1.5 py-0.5 text-[11px] font-medium leading-none ${cls}`}>
       {value}

@@ -59,6 +59,7 @@ export interface TestCaseQueryResult {
 export interface ExportSheet {
   name: string
   statusCol?: number
+  statusCols?: readonly number[]
   widths?: readonly number[]
   head: readonly string[]
   rows: unknown[][]
@@ -100,7 +101,10 @@ export function stripMd(s: unknown): string
 export function splitCells(line: string): string[]
 export function isSeparatorRow(line: string): boolean
 export function cleanGroupName(raw: string): string
-export function parseMarkdownTables(contentOrLines: string | string[]): MarkdownTable[]
+export function parseMarkdownTables(
+  contentOrLines: string | string[],
+  options?: { ignoreCodeFences?: boolean }
+): MarkdownTable[]
 export function colIdx(header: string[], re: RegExp): number
 export function splitSections(text: string): Record<string, string[]>
 export function extractBoldKV(lines: string[]): Record<string, string>
@@ -117,6 +121,7 @@ export function parseGroupScopeKey(scopeKey: string): { fileName: string; group:
 export function parseMarkdownFile(fileName: string, content: string): ParsedFile
 export function queryTestCases(parsedFiles: ParsedFile[], query?: TestCaseQuery): TestCaseQueryResult
 export function buildTestCasesExportPlan(cases: TestCase[], baseName?: string): ExportPlan
+export function classifyBugStatus(rawStatus: unknown): string
 export function isBugFile(text: string): boolean
 export function parseBugFile(text: string, fileName: string): Record<string, unknown>
 export function parseBugIndex(text: string, fileName: string): {
@@ -144,15 +149,32 @@ export function parseExecutionReport(text: string, fileName: string): Record<str
 export function extractPrimaryIds(rawText: string, regex: RegExp): string[]
 export function mapRetestBugStatusToTcStatus(bugStatus: string): string
 export function extractDocTcStatusMap(d: Record<string, unknown>): Map<string, string>
+export function compareRunOrder(a: unknown, b: unknown): number
 export function computeExecutionTrend(docs: Array<Record<string, unknown>>): ExecutionTrendRow[]
 export function buildExecutionExportPlan(arg?: Record<string, unknown>): ExportPlan
 export function formatExportTimestamp(date?: Date): string
-export function buildCsvString(plan: ExportPlan): string
+export function buildCsvString(planOrHead: ExportPlan | readonly string[], maybeRows?: unknown[][]): string
 export function crc32(bytes: Uint8Array): number
 export function zipStoreBytes(files: ZipFileEntry[]): Uint8Array
 export function xmlEscape(s: unknown): string
 export function colLetter(index: number): string
+export function resolveXlsxStatusStyle(val: unknown): number | undefined
 export function buildSheetXml(sh: ExportSheet): string
-export function safeSheetName(raw: string, taken: Set<string>): string
-export function buildXlsxFiles(plan: ExportPlan): ZipFileEntry[]
-export function buildXlsxBytes(plan: ExportPlan): Uint8Array
+export function safeSheetName(raw: string, taken?: Set<string>): string
+export function buildXlsxFiles(planOrSheets: ExportPlan | readonly ExportSheet[]): ZipFileEntry[]
+export function buildXlsxBytes(planOrSheets: ExportPlan | readonly ExportSheet[]): Uint8Array
+export const EVIDENCE_IMG_RE: RegExp
+export function evidenceBaseName(p: unknown): string
+export function extractEvidenceImages(
+  raw: unknown,
+  imagesMap?: { has(k: string): boolean } | string[] | Record<string, unknown> | null
+): {
+  items: Array<{ path: string; baseName: string; loaded: boolean }>
+  missingCount: number
+}
+export function escapeHtml(s: unknown): string
+export function renderEvidenceHtml(
+  raw: unknown,
+  imagesMap?: { has(k: string): boolean } | string[] | Record<string, unknown> | null,
+  mode?: 'bugs' | 'execution'
+): string

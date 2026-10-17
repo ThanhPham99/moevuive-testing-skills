@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveContextPointers } from './sync-antigravity.mjs';
 import {
   colIdx,
+  compareRunOrder,
   extractDocTcStatusMap,
   extractPrimaryIds,
   formatCellPlainText,
@@ -74,6 +75,12 @@ export function normalizeTcId(rawTcId) {
     .replace(/-[a-z0-9]+$/i, '');
 }
 
+function extractMaxUsedIdNumber(text, idRegex) {
+  const matches = [...String(text || '').matchAll(idRegex)];
+  if (matches.length === 0) return null;
+  return Math.max(...matches.map((m) => Number(m[1])));
+}
+
 function extractReqDefinitionsFromMarkdown(
   content,
   sourceRelPath,
@@ -81,7 +88,7 @@ function extractReqDefinitionsFromMarkdown(
   outOfScopeSet,
   duplicateReqs = []
 ) {
-  const tables = parseMarkdownTables(content);
+  const tables = parseMarkdownTables(content, { ignoreCodeFences: true });
 
   // Check explicit "REQ cố ý KHÔNG có TC" tables where column 0 is REQ ID
   for (const table of tables) {
@@ -111,7 +118,8 @@ function extractReqDefinitionsFromMarkdown(
         const reqId = reqMatches[0];
         const title = formatCellPlainText(row[titleIdx !== -1 ? titleIdx : 1] || '').trim();
         const status = statusIdx !== -1 ? formatCellPlainText(row[statusIdx] || '').trim() : '🟢';
-        if (status.includes('⚪') || status.includes('🔴') || status.toLowerCase().includes('deprecated')) {
+        const reqStatusKey = classifyReqStatus(status);
+        if (reqStatusKey === 'UNIMPLEMENTED' || reqStatusKey === 'DEPRECATED') {
           outOfScopeSet.add(reqId);
         }
         if (outMap.has(reqId)) {
@@ -149,6 +157,7 @@ function collectModuleArtifacts(repoRoot) {
         reqs: new Map(),
         duplicateReqs: [],
         outOfScopeReqs: new Set(),
+        outOfScopeTableRefs: [],
         tcs: new Map(),
         duplicateTcs: [],
         tcList: [],
@@ -231,43 +240,86 @@ function collectModuleArtifacts(repoRoot) {
   return modulesMap;
 }
 
+function listBranchCatalogReadmes(repoRoot, branchName) {
+  const branchRoot = path.join(repoRoot, 'docs', branchName);
+  if (!fs.existsSync(branchRoot)) return [];
+  const candidateReadmes = [];
+  const primaryReadme = path.join(branchRoot, 'README.md');
+  if (fs.existsSync(primaryReadme)) {
+    candidateReadmes.push({ namespace: '', fullPath: primaryReadme });
+  }
+  for (const entry of fs.readdirSync(branchRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('_') || entry.name === '_discovery') continue;
+    const secReadme = path.join(branchRoot, entry.name, 'README.md');
+    if (fs.existsSync(secReadme)) {
+      candidateReadmes.push({ namespace: entry.name, fullPath: secReadme });
+    }
+  }
+  return candidateReadmes;
+}
+
+function extractCatalogLinkedSlug(rawText, namespace, docPrefix) {
+  const re = new RegExp(
+    `(?:^|[\\s(\`])(?:\\.\\/)?([A-Za-z0-9_/-]+)\\/${docPrefix}_[A-Za-z0-9_-]+\\.md`
+  );
+  const m = String(rawText || '').match(re);
+  if (!m) return null;
+  const relDir = m[1].replace(/^\/+|\/+$/g, '');
+  if (!namespace) return relDir.toLowerCase();
+  const nsLower = namespace.toLowerCase();
+  if (relDir.toLowerCase().startsWith(`${nsLower}/`)) {
+    return relDir.toLowerCase();
+  }
+  return `${nsLower}/${relDir.toLowerCase()}`;
+}
+
+export function classifyReqStatus(rawStatus) {
+  const s = String(rawStatus || '').trim();
+  if (s.includes('🔴') || /deprecated|gỡ bỏ|đã bỏ/i.test(s)) return 'DEPRECATED';
+  if (s.includes('⚪') || /chưa implement|chua implement|out of scope|ngoài phạm vi/i.test(s)) {
+    return 'UNIMPLEMENTED';
+  }
+  if (s.includes('🟡') || /changed|sửa đổi/i.test(s)) return 'CHANGED';
+  return 'ACTIVE';
+}
+
 /**
  * Discovers primary (`docs/requirements/README.md`) and secondary system
  * (`docs/requirements/_<system>/README.md`) requirement catalogs.
  */
 function scanRequirementCatalogs(repoRoot) {
-  const reqRoot = path.join(repoRoot, 'docs', 'requirements');
-  if (!fs.existsSync(reqRoot)) return { catalogs: [], undocumentedModules: [] };
-
-  const candidateReadmes = [];
-  const primaryReadme = path.join(reqRoot, 'README.md');
-  if (fs.existsSync(primaryReadme)) {
-    candidateReadmes.push({ namespace: '', fullPath: primaryReadme });
-  }
-  for (const entry of fs.readdirSync(reqRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith('_') || entry.name === '_discovery') continue;
-    const secReadme = path.join(reqRoot, entry.name, 'README.md');
-    if (fs.existsSync(secReadme)) {
-      candidateReadmes.push({ namespace: entry.name, fullPath: secReadme });
-    }
+  const candidateReadmes = listBranchCatalogReadmes(repoRoot, 'requirements');
+  if (candidateReadmes.length === 0) {
+    return { catalogs: [], undocumentedModules: [], catalogEntries: [] };
   }
 
   const catalogs = [];
   const undocumentedModules = [];
+  const catalogEntries = [];
 
   for (const { namespace, fullPath } of candidateReadmes) {
     const relFile = path.relative(repoRoot, fullPath).replace(/\\/g, '/');
-    const tables = parseMarkdownTables(fs.readFileSync(fullPath, 'utf8'));
+    const tables = parseMarkdownTables(fs.readFileSync(fullPath, 'utf8'), {
+      ignoreCodeFences: true,
+    });
     const catalog = tables.find((t) => {
       const h0 = (t.headers[0] || '').trim().toLowerCase();
       const h1 = (t.headers[1] || '').trim().toLowerCase();
       return h0 === 'module' && (h1.includes('prefix') || h1 === 'mã');
     });
-    catalogs.push({ namespace, relFile, catalog });
+    const statusTable = tables.find(
+      (t) =>
+        colIdx(t.header, /trạng thái|trang thai/i) >= 0 &&
+        colIdx(t.header, /số lượng|so luong/i) >= 0
+    );
+    catalogs.push({ namespace, relFile, catalog, statusTable });
 
     if (catalog && catalog.headers.length >= 7) {
       const headersLower = catalog.headers.map((h) => h.trim().toLowerCase());
       const statusIdx = headersLower.findIndex((h) => h.includes('trạng thái'));
+      const docIdx = headersLower.findIndex(
+        (h) => h === 'tài liệu' || (h.includes('tài liệu') && !h.includes('mức phủ'))
+      );
       const usedIdx = headersLower.findIndex(
         (h) => h.includes('req đã dùng') || h.includes('dải đã dùng')
       );
@@ -280,9 +332,23 @@ function scanRequirementCatalogs(repoRoot) {
           .trim();
         if (!modName || !prefix) continue;
 
+        const docCell = String(row[docIdx >= 0 ? docIdx : 4] || '').trim();
+        const linkedSlug = extractCatalogLinkedSlug(docCell, namespace, 'requirements');
+
         const statusCell = formatCellPlainText(row[statusIdx >= 0 ? statusIdx : 2] || '').trim();
         const usedCell = formatCellPlainText(row[usedIdx >= 0 ? usedIdx : 5] || '').trim();
         const ambCell = ambIdx >= 0 ? formatCellPlainText(row[ambIdx] || '').trim() : '';
+
+        catalogEntries.push({
+          namespace,
+          modName,
+          prefix,
+          docCell,
+          linkedSlug,
+          statusCell,
+          usedCell,
+          ambCell,
+        });
 
         if (
           statusCell.includes('⬜') ||
@@ -299,6 +365,7 @@ function scanRequirementCatalogs(repoRoot) {
           undocumentedModules.push({
             namespace,
             prefix,
+            linkedSlug,
             module: label,
             status: statusCell || '⬜ Chưa khảo sát',
             risk,
@@ -308,7 +375,220 @@ function scanRequirementCatalogs(repoRoot) {
     }
   }
 
-  return { catalogs, undocumentedModules };
+  return { catalogs, undocumentedModules, catalogEntries };
+}
+
+function scanTestcaseCatalogs(repoRoot) {
+  const candidateReadmes = listBranchCatalogReadmes(repoRoot, 'testcases');
+  const catalogs = [];
+  const catalogEntries = [];
+
+  for (const { namespace, fullPath } of candidateReadmes) {
+    const relFile = path.relative(repoRoot, fullPath).replace(/\\/g, '/');
+    const tables = parseMarkdownTables(fs.readFileSync(fullPath, 'utf8'), {
+      ignoreCodeFences: true,
+    });
+    const tcCatalogTable = tables.find(
+      (t) =>
+        (t.headers[0] || '').trim().toLowerCase() === 'module' &&
+        (t.headers[1] || '').trim().toLowerCase().includes('prefix')
+    );
+    const tcCoverageTable = tables.find(
+      (t) =>
+        colIdx(t.header, /^module$/i) >= 0 &&
+        colIdx(t.header, /req có tài liệu/i) >= 0
+    );
+    catalogs.push({ namespace, relFile, tcCatalogTable, tcCoverageTable });
+
+    if (tcCatalogTable) {
+      for (const row of tcCatalogTable.rows) {
+        const modName = formatCellPlainText(row[0] || '').trim();
+        const prefixCell = formatCellPlainText(row[1] || '')
+          .replace(/`/g, '')
+          .trim();
+        if (!modName && !prefixCell) continue;
+        const linkedSlug = extractCatalogLinkedSlug(row.join(' '), namespace, 'test_cases');
+        catalogEntries.push({
+          namespace,
+          modName,
+          prefixCell,
+          linkedSlug,
+        });
+      }
+    }
+  }
+
+  return { catalogs, catalogEntries };
+}
+
+function scanBugCatalogs(repoRoot) {
+  const candidateReadmes = listBranchCatalogReadmes(repoRoot, 'bugs');
+  const catalogs = [];
+  for (const { namespace, fullPath } of candidateReadmes) {
+    const relFile = path.relative(repoRoot, fullPath).replace(/\\/g, '/');
+    const content = fs.readFileSync(fullPath, 'utf8');
+    const tables = parseMarkdownTables(content, { ignoreCodeFences: true });
+    catalogs.push({ namespace, relFile, content, tables });
+  }
+  return { catalogs };
+}
+
+/**
+ * Resolves a caller-supplied `options.module` token (which may be a directory slug like
+ * `customers`, a REQ/catalog prefix like `CUST` or `_book-api/AUTH`, or a TC prefix like
+ * `CRM_CUST_TC_`) into the canonical module slug.
+ */
+function resolveTargetModule(
+  repoRoot,
+  rawModuleInput,
+  modulesMap = collectModuleArtifacts(repoRoot),
+  reqScan = scanRequirementCatalogs(repoRoot),
+  tcScan = scanTestcaseCatalogs(repoRoot)
+) {
+  if (!rawModuleInput || !String(rawModuleInput).trim()) {
+    return { targetSlug: null, known: true, matchedCatalogEntry: null };
+  }
+  const qLower = String(rawModuleInput).trim().toLowerCase().replace(/^\/+|\/+$/g, '');
+
+  for (const slug of modulesMap.keys()) {
+    if (slug.toLowerCase() === qLower) {
+      return { targetSlug: slug.toLowerCase(), known: true, matchedCatalogEntry: null };
+    }
+  }
+
+  let fallbackCatalogHit = null;
+  for (const entry of reqScan.catalogEntries || []) {
+    const pLower = entry.prefix.toLowerCase();
+    const pUnderscore = pLower.replace(/-/g, '_');
+    const nsLower = entry.namespace ? entry.namespace.toLowerCase() : '';
+    const nsPrefixLower = nsLower ? `${nsLower}/${pLower}` : pLower;
+    const modNameLower = entry.modName.toLowerCase();
+    const nsModNameLower = nsLower ? `${nsLower}/${modNameLower}` : modNameLower;
+    const escapedP = pLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedPUnderscore = pUnderscore.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tcPrefixRegex = new RegExp(
+      `^(?:[a-z0-9]+_)?(?:${escapedP}|${escapedPUnderscore})_tc_?$`,
+      'i'
+    );
+    if (
+      qLower === pLower ||
+      qLower === pUnderscore ||
+      qLower === nsPrefixLower ||
+      qLower === modNameLower ||
+      qLower === nsModNameLower ||
+      qLower === `req-${pLower}` ||
+      (nsLower && qLower === `${nsLower}/req-${pLower}`) ||
+      tcPrefixRegex.test(qLower)
+    ) {
+      if (entry.linkedSlug && modulesMap.has(entry.linkedSlug.toLowerCase())) {
+        return {
+          targetSlug: entry.linkedSlug.toLowerCase(),
+          known: true,
+          matchedCatalogEntry: entry,
+        };
+      }
+      if (entry.linkedSlug) {
+        return {
+          targetSlug: entry.linkedSlug.toLowerCase(),
+          known: true,
+          matchedCatalogEntry: entry,
+        };
+      }
+      if (modulesMap.has(nsPrefixLower)) {
+        return { targetSlug: nsPrefixLower, known: true, matchedCatalogEntry: entry };
+      }
+      if (!fallbackCatalogHit) {
+        fallbackCatalogHit = { targetSlug: nsPrefixLower, known: true, matchedCatalogEntry: entry };
+      }
+    }
+  }
+
+  const qStripped = qLower.replace(/_tc_?$/, '');
+  for (const tcEntry of tcScan.catalogEntries || []) {
+    const prefixLower = tcEntry.prefixCell.toLowerCase();
+    const modLower = tcEntry.modName.toLowerCase();
+    const nsLower = tcEntry.namespace ? tcEntry.namespace.toLowerCase() : '';
+    const nsPrefixLower = nsLower ? `${nsLower}/${prefixLower}` : prefixLower;
+    if (
+      prefixLower === qLower ||
+      prefixLower.replace(/_tc_?$/, '') === qStripped ||
+      nsPrefixLower === qLower ||
+      nsPrefixLower.replace(/_tc_?$/, '') === qStripped ||
+      modLower === qLower
+    ) {
+      if (tcEntry.linkedSlug) {
+        return {
+          targetSlug: tcEntry.linkedSlug.toLowerCase(),
+          known: true,
+          matchedCatalogEntry: fallbackCatalogHit?.matchedCatalogEntry || null,
+        };
+      }
+    }
+  }
+
+  const qWithoutNs = qLower.startsWith('_') && qLower.includes('/') ? qLower.split('/').slice(1).join('/') : qLower;
+  const hasTcSuffix = /_tc_?$/i.test(qWithoutNs);
+  const cleanToken = hasTcSuffix
+    ? qWithoutNs.replace(/_tc_?$/, '').replace(/^[a-z0-9]+_/, '')
+    : qWithoutNs.replace(/^req-/, '');
+  const cleanTokenHyphen = cleanToken.replace(/_/g, '-');
+  const cleanTokenUnderscore = cleanToken.replace(/-/g, '_');
+  const queryNs = qLower.startsWith('_') && qLower.includes('/') ? qLower.split('/')[0] : null;
+
+  for (const [slug, mod] of modulesMap.entries()) {
+    const slugLower = slug.toLowerCase();
+    if (queryNs && !slugLower.startsWith(`${queryNs}/`)) continue;
+    for (const reqFile of mod.reqFiles) {
+      const content = fs.readFileSync(reqFile, 'utf8');
+      for (const m of content.matchAll(REQ_ID_REGEX)) {
+        const reqPre = m[0].replace(/^REQ-/i, '').replace(/-\d+$/, '').toLowerCase();
+        const reqLeaf = reqPre.split('-').pop();
+        if (
+          reqPre === qWithoutNs ||
+          reqPre === cleanToken ||
+          reqPre === cleanTokenHyphen ||
+          reqLeaf === cleanToken
+        ) {
+          return {
+            targetSlug: slugLower,
+            known: true,
+            matchedCatalogEntry: fallbackCatalogHit?.matchedCatalogEntry || null,
+          };
+        }
+      }
+    }
+    for (const tcFile of mod.tcFiles) {
+      const content = fs.readFileSync(tcFile, 'utf8');
+      for (const m of content.matchAll(TC_ID_REGEX)) {
+        const tcIdLower = m[0].toLowerCase();
+        const tcPre = tcIdLower.replace(/\d+(?:-[a-z0-9]+)?$/, '');
+        const midMatch = tcIdLower.match(/^[a-z0-9]+_([a-z0-9_]+)_tc_\d+/);
+        const midTok = midMatch ? midMatch[1] : '';
+        const midLeaf = midTok ? midTok.split('_').pop() : '';
+        if (
+          tcPre === qWithoutNs ||
+          tcPre.replace(/_tc_?$/, '') === qWithoutNs.replace(/_tc_?$/, '') ||
+          (midTok &&
+            (midTok === qWithoutNs ||
+              midTok === cleanToken ||
+              midTok === cleanTokenUnderscore ||
+              midLeaf === cleanToken))
+        ) {
+          return {
+            targetSlug: slugLower,
+            known: true,
+            matchedCatalogEntry: fallbackCatalogHit?.matchedCatalogEntry || null,
+          };
+        }
+      }
+    }
+  }
+
+  if (fallbackCatalogHit) {
+    return fallbackCatalogHit;
+  }
+
+  return { targetSlug: qLower, known: false, matchedCatalogEntry: null };
 }
 
 /**
@@ -331,13 +611,15 @@ function populateModuleIndex(repoRoot, mod) {
   for (const tcFile of mod.tcFiles) {
     const content = fs.readFileSync(tcFile, 'utf8');
     const relFile = path.relative(repoRoot, tcFile).replace(/\\/g, '/');
-    const tables = parseMarkdownTables(content);
+    const tables = parseMarkdownTables(content, { ignoreCodeFences: true });
     for (const table of tables) {
       const headingLower = (table.heading || '').toLowerCase();
-      if (headingLower.includes('không có tc') || headingLower.includes('ngoài phạm vi')) {
+      const h0 = (table.headers[0] || '').trim().toLowerCase();
+      if (h0 === 'req id' && (headingLower.includes('không có tc') || headingLower.includes('ngoài phạm vi'))) {
         for (const row of table.rows) {
-          for (const match of row.join(' ').matchAll(REQ_ID_REGEX)) {
+          for (const match of String(row[0] || '').matchAll(REQ_ID_REGEX)) {
             mod.outOfScopeReqs.add(match[0]);
+            mod.outOfScopeTableRefs.push({ reqId: match[0], relFile });
           }
         }
       }
@@ -360,7 +642,7 @@ function populateModuleIndex(repoRoot, mod) {
   for (const execFile of mod.execFiles) {
     const content = fs.readFileSync(execFile, 'utf8');
     const relFile = path.relative(repoRoot, execFile).replace(/\\/g, '/');
-    const tables = parseMarkdownTables(content);
+    const tables = parseMarkdownTables(content, { ignoreCodeFences: true });
     const parsedExec = parseExecutionReport(content, relFile);
     mod.parsedExecFiles.push({ relFile, tables, parsedExec });
     for (const rawTc of extractDocTcStatusMap(parsedExec).keys()) {
@@ -418,7 +700,6 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
   const brokenPointers = [];
   const schemaViolations = [];
   const referentialErrors = [];
-  const targetModule = options.module ? String(options.module).trim().toLowerCase() : null;
 
   if (!fs.existsSync(docsDir)) {
     return {
@@ -429,6 +710,24 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
       modules: [],
       stats: { markdownFiles: 0, totalReqs: 0, totalTcs: 0, totalBugs: 0 },
     };
+  }
+
+  const modulesMap = collectModuleArtifacts(repoRoot);
+  const reqScan = scanRequirementCatalogs(repoRoot);
+  const tcScan = scanTestcaseCatalogs(repoRoot);
+  const bugScan = scanBugCatalogs(repoRoot);
+  const resolvedMod = resolveTargetModule(repoRoot, options.module, modulesMap, reqScan, tcScan);
+  const targetModule = resolvedMod.targetSlug;
+
+  if (
+    targetModule &&
+    !resolvedMod.known &&
+    (modulesMap.size > 0 || reqScan.catalogs.length > 0 || tcScan.catalogs.length > 0)
+  ) {
+    referentialErrors.push({
+      file: 'docs/requirements/README.md',
+      message: `Unknown target module "${options.module}" (not found in docs/ directory or Module Catalogs)`,
+    });
   }
 
   // 1. Validate all Markdown links, evidence image paths, and inline-code pointers across docs/
@@ -455,8 +754,8 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
     }
   }
 
-  // 2. Validate Module Catalog tables & ID range continuity in docs/requirements/README.md, docs/requirements/_<system>/README.md, docs/testcases/README.md, and docs/user-guides/README.md
-  const { catalogs: reqCatalogs } = targetModule ? { catalogs: [] } : scanRequirementCatalogs(repoRoot);
+  // 2. Validate Module Catalog tables & ID range continuity in docs/requirements/README.md, docs/requirements/_<system>/README.md, docs/testcases/README.md, docs/testcases/_<system>/README.md, and docs/user-guides/README.md
+  const reqCatalogs = targetModule ? [] : reqScan.catalogs;
   for (const { relFile, catalog } of reqCatalogs) {
     if (!catalog || catalog.headers.length < 7) {
       schemaViolations.push({
@@ -473,10 +772,9 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
         if (!(row[0] || '').trim() || !(row[1] || '').trim()) continue;
         const usedRange = (row[usedIdx >= 0 ? usedIdx : 5] || '').replace(/`/g, '');
         const nextCode = (row[nextIdx >= 0 ? nextIdx : 6] || '').replace(/`/g, '');
-        const rangeMatch = usedRange.match(/REQ-[A-Z0-9_-]+-(\d+)\s*(?:→|->)\s*REQ-[A-Z0-9_-]+-(\d+)/);
-        const nextMatch = nextCode.match(/REQ-[A-Z0-9_-]+-(\d+)/);
-        if (rangeMatch && nextMatch) {
-          const maxUsed = Number(rangeMatch[2]);
+        const maxUsed = extractMaxUsedIdNumber(usedRange, /\bREQ-[A-Z0-9_-]+-(\d+)\b/gi);
+        const nextMatch = nextCode.match(/\bREQ-[A-Z0-9_-]+-(\d+)\b/i);
+        if (maxUsed !== null && nextMatch) {
           const nextNum = Number(nextMatch[1]);
           if (nextNum !== maxUsed + 1) {
             schemaViolations.push({
@@ -489,30 +787,28 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
     }
   }
 
-  let tcCatalogTable = null;
-  let relTcReadme = '';
-  const tcReadmePath = path.join(docsDir, 'testcases', 'README.md');
-  if (fs.existsSync(tcReadmePath) && !targetModule) {
-    relTcReadme = path.relative(repoRoot, tcReadmePath).replace(/\\/g, '/');
-    const tables = parseMarkdownTables(fs.readFileSync(tcReadmePath, 'utf8'));
-    tcCatalogTable = tables.find(
-      (t) =>
-        (t.headers[0] || '').trim().toLowerCase() === 'module' &&
-        (t.headers[1] || '').trim().toLowerCase().includes('prefix')
-    );
+  const tcCatalogs = targetModule ? [] : tcScan.catalogs;
+  for (const { relFile: relTcReadme, tcCatalogTable } of tcCatalogs) {
     if (!tcCatalogTable || tcCatalogTable.headers.length < 4) {
       schemaViolations.push({
         file: relTcReadme,
-        message: 'Expected Test Cases Module Catalog table (Module | Prefix TC ID | Dải đã dùng | Mã kế tiếp | ...) in docs/testcases/README.md',
+        message: `Expected Test Cases Module Catalog table (Module | Prefix TC ID | Dải đã dùng | Mã kế tiếp | ...) in ${relTcReadme}`,
       });
     } else {
       for (const row of tcCatalogTable.rows) {
         const usedRange = (row[2] || '').replace(/`/g, '');
         const nextCode = (row[3] || '').replace(/`/g, '');
-        const rangeMatch = usedRange.match(/(\d+)\s*(?:→|->)\s*(\d+)/);
-        const nextMatch = nextCode.match(/(\d+)/);
-        if (rangeMatch && nextMatch) {
-          const maxUsed = Number(rangeMatch[2]);
+        const prefixedMax = extractMaxUsedIdNumber(usedRange, /\b[A-Z0-9_]+_TC_(\d+)\b/gi);
+        const bareRangeMatches = [...usedRange.matchAll(/(\d+)\s*(?:→|->)\s*(\d+)/g)];
+        const maxUsed =
+          prefixedMax !== null
+            ? prefixedMax
+            : bareRangeMatches.length > 0
+              ? Math.max(...bareRangeMatches.map((m) => Number(m[2])))
+              : null;
+        const nextMatch =
+          nextCode.match(/\b[A-Z0-9_]+_TC_(\d+)\b/i) || nextCode.match(/(\d+)/);
+        if (maxUsed !== null && nextMatch) {
           const nextNum = Number(nextMatch[1]);
           if (nextNum !== maxUsed + 1) {
             schemaViolations.push({
@@ -525,26 +821,30 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
     }
   }
 
-  const ugReadmePath = path.join(docsDir, 'user-guides', 'README.md');
-  if (fs.existsSync(ugReadmePath) && !targetModule) {
-    const relUgReadme = path.relative(repoRoot, ugReadmePath).replace(/\\/g, '/');
-    const tables = parseMarkdownTables(fs.readFileSync(ugReadmePath, 'utf8'));
-    const catalog = tables.find(
-      (t) =>
-        (t.headers[0] || '').trim().toLowerCase() === 'module' &&
-        (t.headers[1] || '').trim().toLowerCase().includes('đối tượng')
-    );
-    if (!catalog || catalog.headers.length < 6) {
-      schemaViolations.push({
-        file: relUgReadme,
-        message:
-          'Expected User Guides Catalog table (minimum 6 columns starting with Module | Đối tượng đọc) in docs/user-guides/README.md',
+  const ugCatalogs = [];
+  if (!targetModule) {
+    for (const { namespace, fullPath: ugReadmePath } of listBranchCatalogReadmes(repoRoot, 'user-guides')) {
+      const relUgReadme = path.relative(repoRoot, ugReadmePath).replace(/\\/g, '/');
+      const tables = parseMarkdownTables(fs.readFileSync(ugReadmePath, 'utf8'), {
+        ignoreCodeFences: true,
       });
+      const catalog = tables.find(
+        (t) =>
+          (t.headers[0] || '').trim().toLowerCase() === 'module' &&
+          (t.headers[1] || '').trim().toLowerCase().includes('đối tượng')
+      );
+      if (!catalog || catalog.headers.length < 6) {
+        schemaViolations.push({
+          file: relUgReadme,
+          message: `Expected User Guides Catalog table (minimum 6 columns starting with Module | Đối tượng đọc) in ${relUgReadme}`,
+        });
+      } else {
+        ugCatalogs.push({ namespace, relFile: relUgReadme, catalog });
+      }
     }
   }
 
   // 3. Collect per-module artifacts & validate schemas + referential integrity
-  const modulesMap = collectModuleArtifacts(repoRoot);
   const allKnownTcIds = new Set();
   const allKnownBugIds = new Set();
   const allKnownBugsMap = new Map();
@@ -572,10 +872,57 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
       });
     }
 
-    // 3a. Check 13-column TC table schema + REQ references
+    if (mod.reqs.size > 0) {
+      for (const { reqId, relFile } of mod.outOfScopeTableRefs) {
+        if (!mod.reqs.has(reqId)) {
+          referentialErrors.push({
+            file: relFile,
+            message: `Out-of-scope table references unknown REQ ID "${reqId}" (not found in module "${mod.slug}" requirements)`,
+          });
+        }
+      }
+    }
+
+    // 3a. Check 13-column TC table schema + REQ references + Bảng Đối Soát Coverage parity + Top metadata range continuity
     const hasMultiPartTcFiles = mod.parsedTcFiles.length > 1;
     let moduleTotalTcTables = 0;
+    const modReqToTcObjs = buildModuleReqToTcObjectsMap(mod);
     for (const { relFile, tables, parsedTcFile } of mod.parsedTcFiles) {
+      const isIndexTcFile = path.basename(relFile).toLowerCase().startsWith('test_cases_');
+      for (const table of tables) {
+        if (table.headers.length === 2) {
+          let usedTcRange = '';
+          let nextTcCode = '';
+          for (const row of table.rows) {
+            const k = formatCellPlainText(row[0] || '').trim().toLowerCase();
+            const v = formatCellPlainText(row[1] || '').replace(/`/g, '').trim();
+            if (k === 'tổng số tc' && isIndexTcFile && mod.tcs.size > 0) {
+              const totalMatch = v.match(/^(\d+)\b/);
+              if (totalMatch && Number(totalMatch[1]) !== mod.tcs.size) {
+                referentialErrors.push({
+                  file: relFile,
+                  message: `Test Cases metadata "Tổng số TC" mismatch: metadata declares ${totalMatch[1]} but ${mod.tcs.size} TCs were found`,
+                });
+              }
+            } else if (k === 'dải tc id' || k === 'dải mã đã dùng') usedTcRange = v;
+            else if (k === 'mã kế tiếp') nextTcCode = v;
+          }
+          if (usedTcRange && nextTcCode) {
+            const maxUsed = extractMaxUsedIdNumber(usedTcRange, /\b[A-Z0-9_]+_TC_(\d+)\b/gi);
+            const nextMatch = nextTcCode.match(/\b[A-Z0-9_]+_TC_(\d+)\b/i);
+            if (maxUsed !== null && nextMatch) {
+              const nextNum = Number(nextMatch[1]);
+              if (nextNum !== maxUsed + 1) {
+                schemaViolations.push({
+                  file: relFile,
+                  message: `Test Cases metadata ID range discontinuity: max used is ${maxUsed} but next code is ${nextTcCode}`,
+                });
+              }
+            }
+          }
+        }
+      }
+
       const tcTables = tables.filter((t) => {
         const h0 = (t.headers[0] || '').trim().toLowerCase();
         const h1 = (t.headers[1] || '').trim().toLowerCase();
@@ -633,6 +980,36 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
           }
         }
       }
+
+      for (const table of tables) {
+        const headingLower = (table.heading || '').toLowerCase();
+        const h0 = (table.headers[0] || '').trim().toLowerCase();
+        if (h0 === 'req id' && headingLower.includes('đối soát coverage')) {
+          const soTcCol = colIdx(table.header, /^số tc$|^so tc$/i);
+          for (const row of table.rows) {
+            const reqMatches = [...String(row[0] || '').matchAll(REQ_ID_REGEX)].map((m) => m[0]);
+            for (const reqId of reqMatches) {
+              if (mod.reqs.size > 0 && !mod.reqs.has(reqId)) {
+                referentialErrors.push({
+                  file: relFile,
+                  message: `Coverage table references unknown REQ ID "${reqId}" (not found in module "${mod.slug}" requirements)`,
+                });
+              } else if (soTcCol >= 0 && mod.reqs.has(reqId)) {
+                const rawSoTc = formatCellPlainText(row[soTcCol] || '').trim();
+                if (/^\d+$/.test(rawSoTc)) {
+                  const actualLinkedCount = (modReqToTcObjs.get(reqId) || []).length;
+                  if (Number(rawSoTc) !== actualLinkedCount) {
+                    referentialErrors.push({
+                      file: relFile,
+                      message: `Coverage table "Số TC" mismatch for "${reqId}": table declares ${rawSoTc} but ${actualLinkedCount} TCs reference "${reqId}"`,
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
     if (mod.parsedTcFiles.length > 0 && moduleTotalTcTables === 0 && hasMultiPartTcFiles) {
       schemaViolations.push({
@@ -647,7 +1024,7 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
       totalBugs += 1;
       if (parsedBug.id) {
         allKnownBugIds.add(parsedBug.id);
-        allKnownBugsMap.set(parsedBug.id, parsedBug);
+        allKnownBugsMap.set(parsedBug.id, { ...parsedBug, moduleSlug: mod.slug });
         modBugIds.add(parsedBug.id);
       }
 
@@ -817,7 +1194,7 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
       }
     }
 
-    // 3d. Validate Impact Reports (docs/requirements/<module>/impact/impact_*.md) & Requirement Changelog
+    // 3d. Validate Impact Reports (docs/requirements/<module>/impact/impact_*.md), Requirement Metadata, Ambiguities, & Changelog
     for (const impactFile of mod.impactFiles) {
       const content = fs.readFileSync(impactFile, 'utf8');
       const relFile = path.relative(repoRoot, impactFile).replace(/\\/g, '/');
@@ -845,11 +1222,107 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
       }
     }
 
+    const ambStats = {
+      hasAmbTable: false,
+      openTotal: 0,
+      openByEmoji: { '🔴': 0, '🟡': 0, '🟢': 0 },
+    };
+    let declaredOpenAmbMeta = null;
+    let declaredOpenAmbFile = '';
     for (const reqFile of mod.reqFiles) {
       const content = fs.readFileSync(reqFile, 'utf8');
       const relFile = path.relative(repoRoot, reqFile).replace(/\\/g, '/');
-      const tables = parseMarkdownTables(content);
+      const isIndexReqFile = path.basename(reqFile).toLowerCase().startsWith('requirements_');
+      const tables = parseMarkdownTables(content, { ignoreCodeFences: true });
+
       for (const table of tables) {
+        if (table.headers.length === 2) {
+          let usedRangeVal = '';
+          let nextCodeVal = '';
+          for (const row of table.rows) {
+            const k = formatCellPlainText(row[0] || '').trim().toLowerCase();
+            const v = formatCellPlainText(row[1] || '').replace(/`/g, '').trim();
+            if (k === 'tổng số req' && isIndexReqFile && mod.reqs.size > 0) {
+              const totalMatch = v.match(/^(\d+)\b/);
+              if (totalMatch && Number(totalMatch[1]) !== mod.reqs.size) {
+                referentialErrors.push({
+                  file: relFile,
+                  message: `Requirements metadata "Tổng số REQ" mismatch: metadata declares ${totalMatch[1]} but ${mod.reqs.size} REQs were found`,
+                });
+              }
+            } else if (k === 'dải mã đã dùng') {
+              usedRangeVal = v;
+            } else if (k === 'mã kế tiếp') {
+              nextCodeVal = v;
+            } else if (
+              isIndexReqFile &&
+              (k.includes('ambiguity còn treo') || k.includes('amb còn treo'))
+            ) {
+              const openMatch = v.match(/^(\d+)\b/);
+              if (openMatch) {
+                declaredOpenAmbMeta = Number(openMatch[1]);
+                declaredOpenAmbFile = relFile;
+              }
+            }
+          }
+          if (usedRangeVal && nextCodeVal) {
+            const reqMax = extractMaxUsedIdNumber(usedRangeVal, /\bREQ-[A-Z0-9_-]+-(\d+)\b/gi);
+            const reqNext = nextCodeVal.match(/\bREQ-[A-Z0-9_-]+-(\d+)\b/i);
+            if (reqMax !== null && reqNext && Number(reqNext[1]) !== reqMax + 1) {
+              schemaViolations.push({
+                file: relFile,
+                message: `Requirements metadata REQ ID range discontinuity: max used is ${reqMax} but next code has ${reqNext[0]}`,
+              });
+            }
+            const ambMax = extractMaxUsedIdNumber(usedRangeVal, /\bAMB-(\d+)\b/gi);
+            const ambNext = nextCodeVal.match(/\bAMB-(\d+)\b/i);
+            if (ambMax !== null && ambNext && Number(ambNext[1]) !== ambMax + 1) {
+              schemaViolations.push({
+                file: relFile,
+                message: `Requirements metadata AMB ID range discontinuity: max used is ${ambMax} but next code has ${ambNext[0]}`,
+              });
+            }
+            const riskMax = extractMaxUsedIdNumber(usedRangeVal, /\bRISK-(\d+)\b/gi);
+            const riskNext = nextCodeVal.match(/\bRISK-(\d+)\b/i);
+            if (riskMax !== null && riskNext && Number(riskNext[1]) !== riskMax + 1) {
+              schemaViolations.push({
+                file: relFile,
+                message: `Requirements metadata RISK ID range discontinuity: max used is ${riskMax} but next code has ${riskNext[0]}`,
+              });
+            }
+          }
+        }
+
+        const h0Lower = (table.headers[0] || '').trim().toLowerCase();
+        if (
+          (h0Lower === 'mã' || h0Lower === 'amb id') &&
+          table.rows.some((r) => /\bAMB-\d+\b/.test(r[0] || ''))
+        ) {
+          ambStats.hasAmbTable = true;
+          const sevIdx = colIdx(table.header, /mức độ|muc do|severity/i);
+          const stIdx = colIdx(table.header, /trạng thái|trang thai|status/i);
+          for (const row of table.rows) {
+            if (!/\bAMB-\d+\b/.test(row[0] || '')) continue;
+            const stText = formatCellPlainText(row[stIdx >= 0 ? stIdx : 5] || '').trim();
+            const isClosedOrSkipped =
+              stText.includes('✅') ||
+              stText.includes('⏭️') ||
+              /đã trả lời|đã đóng|bỏ qua|closed|resolved/i.test(stText);
+            const isOpen =
+              !isClosedOrSkipped &&
+              (stText.includes('❓') || /chờ trả lời|cho tra loi|chưa trả lời|open|pending/i.test(stText));
+            if (isOpen) {
+              ambStats.openTotal += 1;
+              const sevText = String(row[sevIdx >= 0 ? sevIdx : 3] || '');
+              for (const emoji of ['🔴', '🟡', '🟢']) {
+                if (sevText.includes(emoji)) {
+                  ambStats.openByEmoji[emoji] += 1;
+                }
+              }
+            }
+          }
+        }
+
         const headingLower = (table.heading || '').toLowerCase();
         if (!headingLower.includes('nhật ký thay đổi') && !headingLower.includes('changelog')) continue;
         const headersLower = table.headers.map((h) => h.trim().toLowerCase());
@@ -880,8 +1353,19 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
         }
       }
     }
+    if (
+      declaredOpenAmbMeta !== null &&
+      ambStats.hasAmbTable &&
+      declaredOpenAmbMeta !== ambStats.openTotal
+    ) {
+      referentialErrors.push({
+        file: declaredOpenAmbFile,
+        message: `Requirements metadata "Ambiguity còn treo" mismatch: metadata declares ${declaredOpenAmbMeta} open AMB(s) but Ambiguities table has ${ambStats.openTotal}`,
+      });
+    }
+    mod.ambStats = ambStats;
 
-    // 3e. Validate User Guides (docs/user-guides/<module>/user_guide_<module>.md) including <!-- Nguồn: REQ-... --> comments
+    // 3e. Validate User Guides (docs/user-guides/<module>/user_guide_<module>.md) including <!-- Nguồn: REQ-... --> comments & metadata
     for (const ugFile of mod.userGuideFiles) {
       const content = fs.readFileSync(ugFile, 'utf8');
       const relFile = path.relative(repoRoot, ugFile).replace(/\\/g, '/');
@@ -896,79 +1380,171 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
           }
         }
       }
-    }
-  }
 
-  // 3f. Validate Requirements Catalog "REQ đã dùng" & Test Cases Catalog "Số TC" count parity against parsed modules
-  for (const { namespace, relFile, catalog } of reqCatalogs) {
-    if (!catalog || catalog.headers.length < 7) continue;
-    const headersLower = catalog.headers.map((h) => h.trim().toLowerCase());
-    const docIdx = headersLower.findIndex(
-      (h) => h === 'tài liệu' || (h.includes('tài liệu') && !h.includes('mức phủ'))
-    );
-    const usedIdx = headersLower.findIndex(
-      (h) => h.includes('req đã dùng') || h.includes('dải đã dùng')
-    );
-    for (const row of catalog.rows) {
-      const docCell = String(row[docIdx >= 0 ? docIdx : 4] || '').trim();
-      if (!docCell || docCell === '—' || docCell === '-') continue;
-      const usedRange = String(row[usedIdx >= 0 ? usedIdx : 5] || '').replace(/`/g, '');
-      const parenMatch = usedRange.match(/\((\d+)\)/);
-      const rangeMatch = usedRange.match(/REQ-[A-Z0-9_-]+-(\d+)\s*(?:→|->)\s*REQ-[A-Z0-9_-]+-(\d+)/);
-      if (!parenMatch && !rangeMatch) continue;
-      const declaredReqCount = parenMatch
-        ? Number(parenMatch[1])
-        : Number(rangeMatch[2]) - Number(rangeMatch[1]) + 1;
-      const matchedMod = [...modulesMap.values()].find((m) => {
-        if (namespace) {
-          if (!m.slug.startsWith(`${namespace}/`)) return false;
-          const localSlug = m.slug.slice(namespace.length + 1);
-          return (
-            docCell.includes(`(${localSlug}/`) ||
-            docCell.includes(`${localSlug}/requirements_`) ||
-            docCell.includes(`(${m.slug}/`) ||
-            docCell.includes(`${m.slug}/requirements_`)
-          );
+      if (path.basename(ugFile).startsWith('user_guide_')) {
+        const tables = parseMarkdownTables(content, { ignoreCodeFences: true });
+        let version = '';
+        let status = '';
+        for (const table of tables) {
+          if (table.headers.length === 2) {
+            for (const row of table.rows) {
+              const k = formatCellPlainText(row[0] || '').trim().toLowerCase();
+              const v = formatCellPlainText(row[1] || '').trim();
+              if (k === 'phiên bản tài liệu') version = v;
+              else if (k === 'trạng thái') status = v;
+            }
+          }
         }
-        if (m.slug.startsWith('_')) return false;
-        return docCell.includes(`(${m.slug}/`) || docCell.includes(`${m.slug}/requirements_`);
-      });
-      if (matchedMod && matchedMod.reqs.size > 0 && matchedMod.reqs.size !== declaredReqCount) {
-        referentialErrors.push({
-          file: relFile,
-          message: `Requirements Catalog "REQ đã dùng" count mismatch for module "${matchedMod.slug}": catalog declares ${declaredReqCount} but ${matchedMod.reqs.size} REQs were found`,
-        });
+        const hasUnverifiedSection = /^\s*#{1,4}\s+.*vùng chưa xác minh/im.test(content);
+        const unverifiedTable = tables.find((t) =>
+          (t.heading || '').toLowerCase().includes('vùng chưa xác minh')
+        );
+        if (status.includes('✅') && hasUnverifiedSection) {
+          referentialErrors.push({
+            file: relFile,
+            message: `User guide metadata status is released ("✅") but internal section "Vùng chưa xác minh" is still present`,
+          });
+        }
+        mod.parsedUgMeta = {
+          relFile,
+          version,
+          status,
+          hasUnverifiedSection,
+          hasUnverifiedTable: Boolean(unverifiedTable),
+          unverifiedCount: unverifiedTable ? unverifiedTable.rows.length : 0,
+        };
       }
     }
   }
 
-  if (tcCatalogTable && !targetModule) {
-    const tcHeadersLower = tcCatalogTable.headers.map((h) => h.trim().toLowerCase());
-    const soTcIdx = tcHeadersLower.findIndex((h) => h.includes('số tc'));
-    if (soTcIdx !== -1) {
-      for (const row of tcCatalogTable.rows) {
-        const rawCountStr = formatCellPlainText(row[soTcIdx] || '').trim();
-        const countMatch = rawCountStr.match(/^\d+$/);
-        if (!countMatch) continue;
-        const declaredCount = Number(countMatch[0]);
-        const prefixCell = formatCellPlainText(row[1] || '')
-          .replace(/`/g, '')
-          .trim();
-        const rowJoined = row.join(' ');
-        const matchedMod = [...modulesMap.values()].find((m) => {
-          if (rowJoined.includes(`(${m.slug}/`)) return true;
-          if (prefixCell && m.tcList.some((tc) => tc.id.startsWith(prefixCell))) return true;
-          return false;
-        });
-        if (matchedMod) {
-          const totalCount = matchedMod.tcList.length;
-          const activeCount = matchedMod.tcList.filter(
-            (tc) => !/deprecated|🗑️/i.test(`${tc.title || ''} ${(tc.tags || []).join(' ')}`)
-          ).length;
-          if (declaredCount !== totalCount && declaredCount !== activeCount) {
+  // 3f. Validate Requirements Catalog "REQ đã dùng" + "AMB treo", Requirements Section 2 status summary, Test Cases Catalog "Số TC", Test Cases Section 2 coverage table, and User Guides Catalog against parsed modules
+  for (const { namespace, relFile, catalog, statusTable } of reqCatalogs) {
+    if (catalog && catalog.headers.length >= 7) {
+      const headersLower = catalog.headers.map((h) => h.trim().toLowerCase());
+      const docIdx = headersLower.findIndex(
+        (h) => h === 'tài liệu' || (h.includes('tài liệu') && !h.includes('mức phủ'))
+      );
+      const usedIdx = headersLower.findIndex(
+        (h) => h.includes('req đã dùng') || h.includes('dải đã dùng')
+      );
+      const ambIdx = headersLower.findIndex((h) => h.includes('amb'));
+      for (const row of catalog.rows) {
+        const docCell = String(row[docIdx >= 0 ? docIdx : 4] || '').trim();
+        if (!docCell || docCell === '—' || docCell === '-') continue;
+        const linkedSlug = extractCatalogLinkedSlug(docCell, namespace, 'requirements');
+        const matchedMod = linkedSlug
+          ? modulesMap.get(linkedSlug)
+          : [...modulesMap.values()].find((m) => {
+              if (namespace) {
+                if (!m.slug.startsWith(`${namespace}/`)) return false;
+                const localSlug = m.slug.slice(namespace.length + 1);
+                return (
+                  docCell.includes(`(${localSlug}/`) ||
+                  docCell.includes(`${localSlug}/requirements_`) ||
+                  docCell.includes(`(${m.slug}/`) ||
+                  docCell.includes(`${m.slug}/requirements_`)
+                );
+              }
+              if (m.slug.startsWith('_')) return false;
+              return docCell.includes(`(${m.slug}/`) || docCell.includes(`${m.slug}/requirements_`);
+            });
+        const usedRange = String(row[usedIdx >= 0 ? usedIdx : 5] || '').replace(/`/g, '');
+        const parenMatch = usedRange.match(/\((\d+)\)/);
+        const rangeMatch = usedRange.match(
+          /REQ-[A-Z0-9_-]+-(\d+)\s*(?:→|->)\s*REQ-[A-Z0-9_-]+-(\d+)/
+        );
+        if (parenMatch || rangeMatch) {
+          const declaredReqCount = parenMatch
+            ? Number(parenMatch[1])
+            : Number(rangeMatch[2]) - Number(rangeMatch[1]) + 1;
+          if (matchedMod && matchedMod.reqs.size > 0 && matchedMod.reqs.size !== declaredReqCount) {
             referentialErrors.push({
-              file: relTcReadme,
-              message: `Test Cases Catalog "Số TC" mismatch for module "${matchedMod.slug}": catalog declares ${declaredCount} but ${totalCount} TCs (${activeCount} active) were found`,
+              file: relFile,
+              message: `Requirements Catalog "REQ đã dùng" count mismatch for module "${matchedMod.slug}": catalog declares ${declaredReqCount} but ${matchedMod.reqs.size} REQs were found`,
+            });
+          }
+        }
+        if (ambIdx >= 0 && matchedMod && matchedMod.ambStats?.hasAmbTable) {
+          const rawAmbCell = formatCellPlainText(row[ambIdx] || '')
+            .replace(/\([^)]*\)/g, '')
+            .trim();
+          for (const m of rawAmbCell.matchAll(/(\d+)\s*(🔴|🟡|🟢)/g)) {
+            const declaredAmbCnt = Number(m[1]);
+            const emoji = m[2];
+            const actualAmbCnt = matchedMod.ambStats.openByEmoji[emoji] || 0;
+            if (declaredAmbCnt !== actualAmbCnt) {
+              referentialErrors.push({
+                file: relFile,
+                message: `Requirements Catalog "AMB treo" count mismatch for module "${matchedMod.slug}" (${emoji}): catalog declares ${declaredAmbCnt} open ${emoji} but Ambiguities table has ${actualAmbCnt}`,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    if (statusTable) {
+      const stCol = colIdx(statusTable.header, /trạng thái|trang thai/i);
+      const cntCol = colIdx(statusTable.header, /số lượng|so luong/i);
+      const namespaceMods = [...modulesMap.values()].filter((m) =>
+        namespace ? m.slug.startsWith(`${namespace}/`) : !m.slug.startsWith('_')
+      );
+      const namespaceReqsCount = namespaceMods.reduce((acc, m) => acc + m.reqs.size, 0);
+      const actualByStatus = { ACTIVE: 0, CHANGED: 0, DEPRECATED: 0, UNIMPLEMENTED: 0 };
+      for (const m of namespaceMods) {
+        for (const reqDef of m.reqs.values()) {
+          actualByStatus[classifyReqStatus(reqDef.status)] += 1;
+        }
+      }
+
+      for (const sRow of statusTable.rows) {
+        const rawLabel = formatCellPlainText(sRow[stCol] || '').trim();
+        const rawCnt = formatCellPlainText(sRow[cntCol] || '').trim();
+        if (/^(?:tổng|tong|total)$/i.test(rawLabel)) {
+          const totalMatch = rawCnt.match(/^(\d+)(?:\s*req)?$/i);
+          if (totalMatch) {
+            const declaredTotal = Number(totalMatch[1]);
+            if (declaredTotal !== namespaceReqsCount) {
+              referentialErrors.push({
+                file: relFile,
+                message: `Requirements status summary total mismatch: summary table declares ${declaredTotal} total REQs but ${namespaceReqsCount} REQs were found`,
+              });
+            }
+            const nonTotalRows = statusTable.rows.filter(
+              (r) => !/^(?:tổng|tong|total)$/i.test(formatCellPlainText(r[stCol] || '').trim())
+            );
+            if (
+              nonTotalRows.length > 0 &&
+              nonTotalRows.every((r) => /^\d+$/.test(formatCellPlainText(r[cntCol] || '').trim()))
+            ) {
+              const sumCounts = nonTotalRows.reduce(
+                (acc, r) => acc + Number(formatCellPlainText(r[cntCol] || '').trim()),
+                0
+              );
+              if (sumCounts !== declaredTotal) {
+                referentialErrors.push({
+                  file: relFile,
+                  message: `Requirements status summary breakdown mismatch: status rows sum to ${sumCounts} but total row declares ${declaredTotal}`,
+                });
+              }
+            }
+          }
+        } else if (/^\d+$/.test(rawCnt)) {
+          const declaredCnt = Number(rawCnt);
+          let stKey = null;
+          if (rawLabel.includes('🔴') || /deprecated/i.test(rawLabel)) {
+            stKey = 'DEPRECATED';
+          } else if (rawLabel.includes('⚪') || /chưa implement|chua implement|out of scope/i.test(rawLabel)) {
+            stKey = 'UNIMPLEMENTED';
+          } else if (rawLabel.includes('🟡') || /changed|sửa đổi/i.test(rawLabel)) {
+            stKey = 'CHANGED';
+          } else if (rawLabel.includes('🟢') || /active/i.test(rawLabel)) {
+            stKey = 'ACTIVE';
+          }
+          if (stKey && declaredCnt !== actualByStatus[stKey]) {
+            referentialErrors.push({
+              file: relFile,
+              message: `Requirements status summary count mismatch for "${rawLabel}": summary table declares ${declaredCnt} but ${actualByStatus[stKey]} REQs were found`,
             });
           }
         }
@@ -976,12 +1552,161 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
     }
   }
 
-  // 4. Validate Bug Catalog schema & cross-references in docs/bugs/README.md if present
-  const bugsReadmePath = path.join(docsDir, 'bugs', 'README.md');
-  if (fs.existsSync(bugsReadmePath) && !targetModule) {
-    const bugsReadmeContent = fs.readFileSync(bugsReadmePath, 'utf8');
-    const relBugsReadme = path.relative(repoRoot, bugsReadmePath).replace(/\\/g, '/');
-    const tables = parseMarkdownTables(bugsReadmeContent);
+  for (const { namespace, relFile: relTcReadme, tcCatalogTable, tcCoverageTable } of tcCatalogs) {
+    if (tcCatalogTable) {
+      const tcHeadersLower = tcCatalogTable.headers.map((h) => h.trim().toLowerCase());
+      const soTcIdx = tcHeadersLower.findIndex((h) => h.includes('số tc'));
+      if (soTcIdx !== -1) {
+        for (const row of tcCatalogTable.rows) {
+          const rawCountStr = formatCellPlainText(row[soTcIdx] || '').trim();
+          const countMatch = rawCountStr.match(/^\d+$/);
+          if (!countMatch) continue;
+          const declaredCount = Number(countMatch[0]);
+          const prefixCell = formatCellPlainText(row[1] || '')
+            .replace(/`/g, '')
+            .trim();
+          const linkedSlug = extractCatalogLinkedSlug(row.join(' '), namespace, 'test_cases');
+          const matchedMod = linkedSlug
+            ? modulesMap.get(linkedSlug)
+            : [...modulesMap.values()].find((m) => {
+                if (namespace && !m.slug.startsWith(`${namespace}/`)) return false;
+                if (!namespace && m.slug.startsWith('_')) return false;
+                if (prefixCell && m.tcList.some((tc) => tc.id.startsWith(prefixCell))) return true;
+                return false;
+              });
+          if (matchedMod) {
+            const totalCount = matchedMod.tcList.length;
+            const activeCount = matchedMod.tcList.filter(
+              (tc) => !/deprecated|🗑️/i.test(`${tc.title || ''} ${(tc.tags || []).join(' ')}`)
+            ).length;
+            if (declaredCount !== totalCount && declaredCount !== activeCount) {
+              referentialErrors.push({
+                file: relTcReadme,
+                message: `Test Cases Catalog "Số TC" mismatch for module "${matchedMod.slug}": catalog declares ${declaredCount} but ${totalCount} TCs (${activeCount} active) were found`,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    if (tcCoverageTable) {
+      const modCol = colIdx(tcCoverageTable.header, /^module$/i);
+      const docReqCol = colIdx(tcCoverageTable.header, /req có tài liệu/i);
+      const inScopeReqCol = colIdx(tcCoverageTable.header, /req trong phạm vi/i);
+      const covReqCol = colIdx(tcCoverageTable.header, /req đã có/i);
+      const covPctCol = colIdx(tcCoverageTable.header, /độ phủ|do phu/i);
+      for (const row of tcCoverageTable.rows) {
+        const rawModCell = formatCellPlainText(row[modCol] || '')
+          .replace(/`/g, '')
+          .trim();
+        if (!rawModCell) continue;
+        const modInput = namespace && !rawModCell.startsWith('_') ? `${namespace}/${rawModCell}` : rawModCell;
+        const modRes = resolveTargetModule(repoRoot, modInput, modulesMap, reqScan, tcScan);
+        const matchedMod = modRes.targetSlug ? modulesMap.get(modRes.targetSlug) : null;
+        if (!matchedMod || matchedMod.reqs.size === 0) continue;
+
+        const actualOutOfScope = [...matchedMod.reqs.keys()].filter((id) =>
+          matchedMod.outOfScopeReqs.has(id)
+        ).length;
+        const actualInScope = Math.max(0, matchedMod.reqs.size - actualOutOfScope);
+        const reqToTcObjs = buildModuleReqToTcObjectsMap(matchedMod);
+        let actualCovered = 0;
+        for (const reqId of matchedMod.reqs.keys()) {
+          if (matchedMod.outOfScopeReqs.has(reqId)) continue;
+          if ((reqToTcObjs.get(reqId) || []).length > 0) actualCovered += 1;
+        }
+
+        if (docReqCol >= 0) {
+          const rawDocReqs = formatCellPlainText(row[docReqCol] || '').trim();
+          if (/^\d+$/.test(rawDocReqs) && Number(rawDocReqs) !== matchedMod.reqs.size) {
+            referentialErrors.push({
+              file: relTcReadme,
+              message: `Test Cases coverage table "REQ có tài liệu" mismatch for module "${matchedMod.slug}": table declares ${rawDocReqs} but ${matchedMod.reqs.size} REQs were found`,
+            });
+          }
+        }
+        if (inScopeReqCol >= 0) {
+          const rawInScope = formatCellPlainText(row[inScopeReqCol] || '').trim();
+          if (/^\d+$/.test(rawInScope) && Number(rawInScope) !== actualInScope) {
+            referentialErrors.push({
+              file: relTcReadme,
+              message: `Test Cases coverage table "REQ trong phạm vi TC" mismatch for module "${matchedMod.slug}": table declares ${rawInScope} but ${actualInScope} in-scope REQs were found`,
+            });
+          }
+        }
+        if (covReqCol >= 0) {
+          const rawCov = formatCellPlainText(row[covReqCol] || '').trim();
+          if (/^\d+$/.test(rawCov) && Number(rawCov) !== actualCovered) {
+            referentialErrors.push({
+              file: relTcReadme,
+              message: `Test Cases coverage table "REQ đã có ≥1 TC" mismatch for module "${matchedMod.slug}": table declares ${rawCov} but ${actualCovered} covered REQs were found`,
+            });
+          }
+        }
+        if (covPctCol >= 0 && inScopeReqCol >= 0) {
+          const rawInScope = formatCellPlainText(row[inScopeReqCol] || '').trim();
+          const rawPct = formatCellPlainText(row[covPctCol] || '').trim();
+          const pctMatch = rawPct.match(/^(\d+(?:\.\d+)?)\s*%$/);
+          if (/^\d+$/.test(rawInScope) && pctMatch && actualInScope > 0) {
+            const declaredPct = Number(pctMatch[1]);
+            const actualPct = Number(((actualCovered / actualInScope) * 100).toFixed(1));
+            if (Math.round(declaredPct) !== Math.round(actualPct)) {
+              referentialErrors.push({
+                file: relTcReadme,
+                message: `Test Cases coverage table "Độ phủ" mismatch for module "${matchedMod.slug}": table declares ${rawPct} but actual coverage is ${actualPct}%`,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (const { namespace, relFile: relUgReadme, catalog } of ugCatalogs) {
+    const verCol = colIdx(catalog.header, /phiên bản tài liệu|phien ban tai lieu/i);
+    const unverifiedCol = colIdx(catalog.header, /chưa xác minh|chua xac minh/i);
+    const releaseCol = colIdx(catalog.header, /trạng thái phát hành|trang thai phat hanh/i);
+    for (const row of catalog.rows) {
+      const linkedSlug = extractCatalogLinkedSlug(row.join(' '), namespace, 'user_guide');
+      const matchedMod = linkedSlug ? modulesMap.get(linkedSlug) : null;
+      if (!matchedMod || !matchedMod.parsedUgMeta) continue;
+      if (verCol >= 0 && matchedMod.parsedUgMeta.version) {
+        const catVer = formatCellPlainText(row[verCol] || '').trim();
+        if (catVer && catVer !== matchedMod.parsedUgMeta.version) {
+          referentialErrors.push({
+            file: relUgReadme,
+            message: `User Guides Catalog version mismatch for module "${matchedMod.slug}": catalog declares "${catVer}" but ${matchedMod.parsedUgMeta.relFile} has "${matchedMod.parsedUgMeta.version}"`,
+          });
+        }
+      }
+      if (unverifiedCol >= 0 && matchedMod.parsedUgMeta.hasUnverifiedTable) {
+        const rawUnv = formatCellPlainText(row[unverifiedCol] || '').trim();
+        if (/^\d+$/.test(rawUnv) && Number(rawUnv) !== matchedMod.parsedUgMeta.unverifiedCount) {
+          referentialErrors.push({
+            file: relUgReadme,
+            message: `User Guides Catalog "Còn ⚠️ chưa xác minh" count mismatch for module "${matchedMod.slug}": catalog declares ${rawUnv} but ${matchedMod.parsedUgMeta.relFile} has ${matchedMod.parsedUgMeta.unverifiedCount}`,
+          });
+        }
+      }
+      if (releaseCol >= 0) {
+        const rawRel = formatCellPlainText(row[releaseCol] || '').trim();
+        if (rawRel.includes('✅') && matchedMod.parsedUgMeta.hasUnverifiedSection) {
+          referentialErrors.push({
+            file: relUgReadme,
+            message: `User Guides Catalog declares "${matchedMod.slug}" as released ("✅") but ${matchedMod.parsedUgMeta.relFile} still contains internal section "Vùng chưa xác minh"`,
+          });
+        }
+      }
+    }
+  }
+
+  // 4. Validate Bug Catalog schema & cross-references in docs/bugs/README.md and docs/bugs/_<system>/README.md if present
+  const bugCatalogs = targetModule ? [] : bugScan.catalogs;
+  const secondaryBugCatalogNamespaces = new Set(
+    bugCatalogs.filter((c) => c.namespace).map((c) => c.namespace.toLowerCase())
+  );
+  for (const { namespace, relFile: relBugsReadme, content: bugsReadmeContent, tables } of bugCatalogs) {
     const catalogTable = tables.find((t) => {
       const h0 = (t.headers[0] || '').trim().toLowerCase();
       return h0 === 'mã bug' || h0 === 'bug id';
@@ -989,7 +1714,7 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
     if (!catalogTable || catalogTable.headers.length !== 8) {
       schemaViolations.push({
         file: relBugsReadme,
-        message: `Expected 8-column Bug Catalog table in docs/bugs/README.md, found ${catalogTable ? catalogTable.headers.length : 0} columns`,
+        message: `Expected 8-column Bug Catalog table in ${relBugsReadme}, found ${catalogTable ? catalogTable.headers.length : 0} columns`,
       });
     } else {
       const parsedIndex = parseBugIndex(bugsReadmeContent, relBugsReadme);
@@ -1021,13 +1746,19 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
               message: `Bug Catalog priority mismatch for "${bugRow.id}": catalog says "${bugRow.priority}" but BUG file has "${targetBug.priority}"`,
             });
           }
-          const catalogIsClosed = bugRow.status === 'CLOSED';
-          const fileIsClosed = targetBug.status === 'CLOSED';
-          if (catalogIsClosed !== fileIsClosed) {
-            referentialErrors.push({
-              file: relBugsReadme,
-              message: `Bug Catalog status mismatch for "${bugRow.id}": catalog status is "${bugRow.status}" but BUG file status is "${targetBug.status}"`,
-            });
+          if (bugRow.status && targetBug.status) {
+            const isCompatibleStatus =
+              bugRow.status === targetBug.status ||
+              (targetBug.status === 'OPEN' &&
+                (bugRow.status === 'PENDING' || bugRow.status === 'NEEDS_REVIEW')) ||
+              ((targetBug.status === 'PARTIAL' || targetBug.status === 'CANNOT_VERIFY') &&
+                bugRow.status === 'NEEDS_REVIEW');
+            if (!isCompatibleStatus) {
+              referentialErrors.push({
+                file: relBugsReadme,
+                message: `Bug Catalog status mismatch for "${bugRow.id}": catalog status is "${bugRow.status}" but BUG file status is "${targetBug.status}"`,
+              });
+            }
           }
         }
         const tcRefs = extractPrimaryIds(bugRow.tc, TC_ID_REGEX).map((m) => normalizeTcId(m));
@@ -1040,12 +1771,55 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
           }
         }
       }
-      for (const knownBugId of allKnownBugIds) {
-        if (!catalogedBugIds.has(knownBugId)) {
+      const nsLower = namespace ? namespace.toLowerCase() : '';
+      for (const [knownBugId, bugInfo] of allKnownBugsMap.entries()) {
+        const bugModSlug = String(bugInfo.moduleSlug || '').toLowerCase();
+        const belongsToCatalog = nsLower
+          ? bugModSlug.startsWith(`${nsLower}/`)
+          : !bugModSlug.startsWith('_') || !secondaryBugCatalogNamespaces.has(bugModSlug.split('/')[0]);
+        if (belongsToCatalog && !catalogedBugIds.has(knownBugId)) {
           referentialErrors.push({
             file: relBugsReadme,
-            message: `Bug file "${knownBugId}" is missing from Bug Catalog in docs/bugs/README.md`,
+            message: `Bug file "${knownBugId}" is missing from Bug Catalog in ${relBugsReadme}`,
           });
+        }
+      }
+
+      const bugSummaryTable = tables.find(
+        (t) =>
+          colIdx(t.header, /trạng thái|trang thai/i) >= 0 &&
+          colIdx(t.header, /số lượng|so luong/i) >= 0
+      );
+      if (bugSummaryTable) {
+        const stCol = colIdx(bugSummaryTable.header, /trạng thái|trang thai/i);
+        const cntCol = colIdx(bugSummaryTable.header, /số lượng|so luong/i);
+        for (const sRow of bugSummaryTable.rows) {
+          const rawLabel = formatCellPlainText(sRow[stCol] || '').trim();
+          const rawCnt = formatCellPlainText(sRow[cntCol] || '').trim();
+          if (!/^\d+$/.test(rawCnt)) continue;
+          const declaredCnt = Number(rawCnt);
+          let actualCnt = null;
+          if (/^(?:tổng|tong|total)$/i.test(rawLabel)) {
+            actualCnt = parsedIndex.rows.length;
+          } else if (/đóng|closed/i.test(rawLabel)) {
+            actualCnt = parsedIndex.rows.filter((r) => r.status === 'CLOSED').length;
+          } else if (/một phần|mot phan|partial/i.test(rawLabel)) {
+            actualCnt = parsedIndex.rows.filter((r) => r.status === 'PARTIAL').length;
+          } else if (/không verify|khong verify|cannot[_ ]?verify/i.test(rawLabel)) {
+            actualCnt = parsedIndex.rows.filter((r) => r.status === 'CANNOT_VERIFY').length;
+          } else if (/chờ retest|đã fix|pending/i.test(rawLabel)) {
+            actualCnt = parsedIndex.rows.filter((r) => r.status === 'PENDING').length;
+          } else if (/rà lại|review/i.test(rawLabel)) {
+            actualCnt = parsedIndex.rows.filter((r) => r.status === 'NEEDS_REVIEW').length;
+          } else if (/đang mở|open/i.test(rawLabel)) {
+            actualCnt = parsedIndex.rows.filter((r) => r.status === 'OPEN').length;
+          }
+          if (actualCnt !== null && declaredCnt !== actualCnt) {
+            referentialErrors.push({
+              file: relBugsReadme,
+              message: `Bug Catalog status summary count mismatch for "${rawLabel}": summary table declares ${declaredCnt} but Bug Catalog has ${actualCnt}`,
+            });
+          }
         }
       }
     }
@@ -1126,12 +1900,13 @@ export function scanAutomationScripts(repoRoot = path.resolve(__dirname, '..'), 
   return { tcToScripts, scriptFiles };
 }
 
-function loadIndexedModules(repoRoot, targetSlug) {
-  const modulesMap = collectModuleArtifacts(repoRoot);
+function loadIndexedModules(repoRoot, targetSlug, modulesMap = collectModuleArtifacts(repoRoot)) {
   const selectedModules = [];
+  const allModules = [];
   const allDocumentedTcIds = new Set();
   for (const [slug, mod] of modulesMap.entries()) {
     populateModuleIndex(repoRoot, mod);
+    allModules.push(mod);
     for (const tcId of mod.tcs.keys()) {
       allDocumentedTcIds.add(tcId);
     }
@@ -1140,7 +1915,83 @@ function loadIndexedModules(repoRoot, targetSlug) {
       selectedModules.push(mod);
     }
   }
-  return { selectedModules, allDocumentedTcIds };
+  return { selectedModules, allModules, allDocumentedTcIds };
+}
+
+function buildModuleOrphanMatcher(mod, reqScan, tcScan, tcToScripts) {
+  const slugLower = mod.slug.toLowerCase();
+  const leafSlug = slugLower.split('/').pop();
+  const tcPrefixes = new Set();
+  const tokens = new Set([leafSlug, leafSlug.replace(/-/g, '_')]);
+  const knownScriptPaths = new Set();
+
+  for (const tc of mod.tcList) {
+    const tcLower = tc.id.toLowerCase();
+    tcPrefixes.add(tcLower.replace(/\d+$/, ''));
+    const mid = tcLower.match(/^[a-z0-9]+_([a-z0-9_]+)_tc_\d+/);
+    if (mid) {
+      tokens.add(mid[1]);
+      tokens.add(mid[1].split('_').pop());
+    }
+    if (tcToScripts && tcToScripts.has(tc.id)) {
+      for (const s of tcToScripts.get(tc.id) || []) {
+        knownScriptPaths.add(s.relPath.toLowerCase());
+      }
+    }
+  }
+  for (const reqId of mod.reqs.keys()) {
+    const pre = reqId.replace(/^REQ-/i, '').replace(/-\d+$/, '').toLowerCase();
+    tokens.add(pre);
+    tokens.add(pre.replace(/-/g, '_'));
+    tokens.add(pre.split('-').pop());
+  }
+  for (const entry of reqScan?.catalogEntries || []) {
+    if (entry.linkedSlug && entry.linkedSlug.toLowerCase() === slugLower) {
+      const pLower = entry.prefix.toLowerCase();
+      tokens.add(pLower);
+      tokens.add(pLower.replace(/-/g, '_'));
+    }
+  }
+  for (const tcEntry of tcScan?.catalogEntries || []) {
+    if (tcEntry.linkedSlug && tcEntry.linkedSlug.toLowerCase() === slugLower && tcEntry.prefixCell) {
+      const pLower = tcEntry.prefixCell.toLowerCase();
+      tcPrefixes.add(pLower.endsWith('_') ? pLower : `${pLower}_`);
+      tokens.add(pLower.replace(/_tc_?$/, '').replace(/^[a-z0-9]+_/, ''));
+    }
+  }
+  return { slugLower, tcPrefixes, tokens, knownScriptPaths };
+}
+
+function tcIdMatchesModuleMatcher(matcher, tcId) {
+  const tcLower = tcId.toLowerCase();
+  const tcPre = tcLower.replace(/\d+$/, '');
+  if (matcher.tcPrefixes.has(tcPre)) return true;
+  const mid = tcLower.match(/^[a-z0-9]+_([a-z0-9_]+)_tc_\d+/);
+  if (mid) {
+    if (matcher.tokens.has(mid[1]) || matcher.tokens.has(mid[1].split('_').pop())) {
+      return true;
+    }
+  }
+  if (matcher.tokens.has(tcPre.replace(/_tc_?$/, ''))) return true;
+  return false;
+}
+
+function scriptPathMatchesModuleMatcher(matcher, scripts) {
+  for (const s of scripts) {
+    const p = s.relPath.toLowerCase();
+    if (matcher.knownScriptPaths && matcher.knownScriptPaths.has(p)) {
+      return true;
+    }
+    for (const tok of matcher.tokens) {
+      if (tok.length < 2) continue;
+      const escapedTok = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const boundaryRe = new RegExp(`(?:^|[/_.-])${escapedTok}(?:[/_.-]|test|spec|$)`, 'i');
+      if (boundaryRe.test(p)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function buildModuleReqToTcObjectsMap(mod) {
@@ -1165,20 +2016,28 @@ function buildModuleReqToTcObjectsMap(mod) {
  * (`REQ ID <-> TC ID <-> Automation Script`) for one or all modules.
  */
 export function computeTraceabilityReport(repoRoot = path.resolve(__dirname, '..'), options = {}) {
-  const targetSlug = options.module ? String(options.module).trim().toLowerCase() : null;
+  const reqScan = scanRequirementCatalogs(repoRoot);
+  const tcScan = scanTestcaseCatalogs(repoRoot);
+  const rawModulesMap = collectModuleArtifacts(repoRoot);
+  const resolvedMod = resolveTargetModule(repoRoot, options.module, rawModulesMap, reqScan, tcScan);
+  const targetSlug = resolvedMod.targetSlug;
+  const rawQueryLower = options.module ? String(options.module).trim().toLowerCase() : null;
   const { tcToScripts } = scanAutomationScripts(repoRoot, options);
-  const { undocumentedModules: catalogUndocumented } = scanRequirementCatalogs(repoRoot);
+  const catalogUndocumented = reqScan.undocumentedModules;
   const undocumentedModules = targetSlug
     ? catalogUndocumented.filter(
         (m) =>
+          (m.linkedSlug && m.linkedSlug.toLowerCase() === targetSlug) ||
           m.module.toLowerCase().includes(targetSlug) ||
           m.prefix.toLowerCase() === targetSlug ||
+          (rawQueryLower && m.prefix.toLowerCase() === rawQueryLower) ||
+          (m.namespace && `${m.namespace}/${m.prefix}`.toLowerCase() === targetSlug) ||
           m.namespace.toLowerCase() === targetSlug
       )
     : catalogUndocumented;
 
-  const { selectedModules, allDocumentedTcIds } =
-    options._preloaded || loadIndexedModules(repoRoot, targetSlug);
+  const { selectedModules, allModules = [], allDocumentedTcIds } =
+    options._preloaded || loadIndexedModules(repoRoot, targetSlug, rawModulesMap);
 
   const rows = [];
   const uncoveredReqs = [];
@@ -1267,8 +2126,44 @@ export function computeTraceabilityReport(repoRoot = path.resolve(__dirname, '..
     }
   }
 
+  const selectedMatchers = targetSlug
+    ? selectedModules.length > 0
+      ? selectedModules.map((m) => buildModuleOrphanMatcher(m, reqScan, tcScan, tcToScripts))
+      : [
+          {
+            slugLower: targetSlug,
+            tcPrefixes: new Set(),
+            tokens: new Set([targetSlug.split('/').pop(), ...(rawQueryLower ? [rawQueryLower] : [])]),
+            knownScriptPaths: new Set(),
+          },
+        ]
+    : [];
+  const otherMatchers = targetSlug
+    ? allModules
+        .filter((m) => !selectedModules.includes(m))
+        .map((m) => buildModuleOrphanMatcher(m, reqScan, tcScan, tcToScripts))
+    : [];
+
   for (const [tcId, scripts] of tcToScripts.entries()) {
     if (!allDocumentedTcIds.has(tcId)) {
+      if (targetSlug) {
+        const idMatchesSelected = selectedMatchers.some((mm) => tcIdMatchesModuleMatcher(mm, tcId));
+        const idMatchesOther = otherMatchers.some((mm) => tcIdMatchesModuleMatcher(mm, tcId));
+        if (!idMatchesSelected) {
+          if (idMatchesOther) {
+            continue;
+          }
+          const pathMatchesSelected = selectedMatchers.some((mm) =>
+            scriptPathMatchesModuleMatcher(mm, scripts)
+          );
+          const pathMatchesOther = otherMatchers.some((mm) =>
+            scriptPathMatchesModuleMatcher(mm, scripts)
+          );
+          if (!pathMatchesSelected && (pathMatchesOther || otherMatchers.length > 0)) {
+            continue;
+          }
+        }
+      }
       orphanScripts.push({
         tcId,
         files: scripts.map((s) => s.relPath),
@@ -1360,6 +2255,7 @@ export function computeTraceabilityReport(repoRoot = path.resolve(__dirname, '..
   }
 
   return {
+    knownModule: resolvedMod.known,
     modules: selectedModules.map((m) => m.slug),
     rows,
     uncoveredReqs,
@@ -1390,10 +2286,10 @@ export function computeTraceabilityReport(repoRoot = path.resolve(__dirname, '..
   };
 }
 
-function numericRunOrder(execEntry) {
-  const raw = String(execEntry?.parsedExec?.runId || execEntry?.relFile || '');
-  const matches = [...raw.matchAll(/\d+/g)];
-  return matches.length ? Number(matches[matches.length - 1][0]) : 0;
+function compareExecRunOrder(a, b) {
+  const rawA = String(a?.parsedExec?.runId || a?.relFile || '');
+  const rawB = String(b?.parsedExec?.runId || b?.relFile || '');
+  return compareRunOrder(rawA, rawB);
 }
 
 /**
@@ -1401,9 +2297,13 @@ function numericRunOrder(execEntry) {
  * and evaluates the 7 default Exit Criteria across `docs/`.
  */
 export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'), options = {}) {
-  const targetSlug = options.module ? String(options.module).trim().toLowerCase() : null;
+  const rawModulesMap = collectModuleArtifacts(repoRoot);
+  const reqScan = scanRequirementCatalogs(repoRoot);
+  const tcScan = scanTestcaseCatalogs(repoRoot);
+  const resolvedMod = resolveTargetModule(repoRoot, options.module, rawModulesMap, reqScan, tcScan);
+  const targetSlug = resolvedMod.targetSlug;
   const milestone = options.milestone ? String(options.milestone).trim() : 'Current Milestone';
-  const preloaded = loadIndexedModules(repoRoot, targetSlug);
+  const preloaded = loadIndexedModules(repoRoot, targetSlug, rawModulesMap);
   const { selectedModules } = preloaded;
   const rtm = computeTraceabilityReport(repoRoot, { ...options, _preloaded: preloaded });
 
@@ -1444,16 +2344,16 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
   for (const mod of selectedModules) {
     const nonRetestExecs = mod.parsedExecFiles
       .filter((e) => e.parsedExec.kind !== 'retest' && !e.parsedExec.isRetest)
-      .sort((a, b) => numericRunOrder(a) - numericRunOrder(b));
+      .sort(compareExecRunOrder);
     const retestExecs = mod.parsedExecFiles
       .filter((e) => e.parsedExec.kind === 'retest' || e.parsedExec.isRetest)
-      .sort((a, b) => numericRunOrder(a) - numericRunOrder(b));
+      .sort(compareExecRunOrder);
     executionRunsCount += nonRetestExecs.length;
     retestRunsCount += retestExecs.length;
 
     const orderedExecs = [...mod.parsedExecFiles].sort(
       (a, b) =>
-        numericRunOrder(a) - numericRunOrder(b) ||
+        compareExecRunOrder(a, b) ||
         (a.parsedExec.isRetest ? 1 : 0) - (b.parsedExec.isRetest ? 1 : 0)
     );
     const latestExec = orderedExecs[orderedExecs.length - 1] || null;
@@ -1494,7 +2394,9 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
       const st = tcStatusById.get(tcDef.id) || '';
       if (st) modExecutedDesignedCount += 1;
       if (orderedExecs.length > 0) {
-        const isHighPrio = /critical|high|p1|cao/i.test(String(tcDef.priority || ''));
+        const isHighPrio = /critical|high|p0|p1|nghiêm trọng|cao/i.test(
+          String(tcDef.priority || '')
+        );
         if (isHighPrio && st !== 'SKIPPED') {
           highPrioExecDenom += 1;
           if (st === 'PASS') highPrioPass += 1;
@@ -1577,7 +2479,7 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
         const isCritReq =
           linkedTcs.length === 0 ||
           linkedTcs.some((tc) =>
-            /critical|high|p1|cao/i.test(`${tc.priority || ''} ${tc.risk || ''}`)
+            /critical|high|p0|p1|nghiêm trọng|cao/i.test(`${tc.priority || ''} ${tc.risk || ''}`)
           );
         if (isCritReq) {
           criticalReqsTotal += 1;
@@ -1814,6 +2716,7 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
   ];
 
   return {
+    knownModule: resolvedMod.known,
     verdict,
     verdictBanner,
     milestone,

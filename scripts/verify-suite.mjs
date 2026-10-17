@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 
 import {
   AGY_CONFIG_REL_FROM_PLUGIN,
@@ -37,12 +38,17 @@ import {
   buildTestCasesExportPlan,
   buildXlsxBytes,
   computeExecutionTrend,
+  dedupeBugs,
+  extractBoldKV,
+  extractEvidenceImages,
+  isBugFile,
   parseBugFile,
   parseBugIndex,
   parseExecutionReport,
   parseRtm,
   parseTestSummary,
   queryBugsCatalog,
+  renderEvidenceHtml,
 } from './viewer-core.mjs';
 import {
   computeTestSummaryReport,
@@ -1144,10 +1150,15 @@ test('Seam 8: Viewer Core Synchronization projects viewer-core.mjs into standalo
     path.join(REPO_ROOT, 'scripts', 'execution-viewer', 'bundle.html'),
     'utf8'
   );
+  const tcBundle = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'bundle.html'),
+    'utf8'
+  );
 
   for (const [name, html] of [
     ['bugs-viewer/bundle.html', bugsBundle],
     ['execution-viewer/bundle.html', execBundle],
+    ['testcases-viewer/bundle.html', tcBundle],
   ]) {
     assert.ok(
       html.includes('/* __VIEWER_CORE_START__ */') && html.includes('/* __VIEWER_CORE_END__ */'),
@@ -1175,6 +1186,9 @@ test('Seam 8: Viewer Core Synchronization projects viewer-core.mjs into standalo
   assert.match(execBundle, /buildExecutionExportPlan\(/, 'execution-viewer must delegate Export Plan building to viewer-core.mjs');
   assert.match(execBundle, /data-tab="sum"/, 'execution-viewer must provide the Tổng hợp Release (sum) tab for test_summary_*.md');
   assert.match(execBundle, /function renderSummary\(/, 'execution-viewer must define renderSummary() for kind="summary" reports');
+  assert.match(tcBundle, /parseMarkdownFile\(/, 'testcases-viewer must delegate markdown parsing to viewer-core.mjs');
+  assert.match(tcBundle, /queryTestCases\(/, 'testcases-viewer must delegate test case querying/sorting to viewer-core.mjs');
+  assert.match(tcBundle, /buildTestCasesExportPlan/, 'testcases-viewer must delegate Export Plan building to viewer-core.mjs');
 
   // Verify testcases-viewer parity (wrapper delegation to viewer-core.mjs, bundle.html 13-col & XLSX ZIP headers, README.md React 19 & viewer-core.mjs docs)
   const tcParserSrc = fs.readFileSync(
@@ -1188,12 +1202,14 @@ test('Seam 8: Viewer Core Synchronization projects viewer-core.mjs into standalo
   assert.match(tcParserSrc, /\.\.\/\.\.\/\.\.\/viewer-core\.mjs/, 'testcases-viewer parser.ts must delegate to scripts/viewer-core.mjs');
   assert.match(tcExportSrc, /\.\.\/\.\.\/\.\.\/viewer-core\.mjs/, 'testcases-viewer export.ts must delegate to scripts/viewer-core.mjs');
 
-  const tcBundle = fs.readFileSync(
-    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'bundle.html'),
-    'utf8'
-  );
   assert.match(tcBundle, /Test Scenario/, 'testcases-viewer/bundle.html must include canonical Test Scenario column');
   assert.match(tcBundle, /application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet/, 'testcases-viewer/bundle.html must support .xlsx export');
+  const tcModuleScriptMatch = tcBundle.match(/<script type="module">([\s\S]*?)<\/script>/);
+  assert.ok(tcModuleScriptMatch, 'testcases-viewer/bundle.html must contain a <script type="module"> block');
+  assert.doesNotThrow(
+    () => new Function(tcModuleScriptMatch[1]),
+    'testcases-viewer/bundle.html <script type="module"> must parse with zero JavaScript syntax errors'
+  );
 
   const tcReadme = fs.readFileSync(
     path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'README.md'),
@@ -3225,11 +3241,2082 @@ test('Seam 15: Viewer Core TypeScript Declaration Parity, Full Cross-Catalog/Sum
   } finally {
     fs.rmSync(tmpSecRoot, { recursive: true, force: true });
   }
+
+  // 9. Verify prefix-to-slug module resolution (CUST -> customers, PRJ -> projects, CRM_LOGIN_TC_ -> login), unknown module error, module-scoped orphanScripts, and Section 2 summary table parity
+  const custValidation = validateDocsTree(REPO_ROOT, { module: 'CUST' });
+  assert.equal(custValidation.valid, true, 'validateDocsTree({ module: "CUST" }) must resolve prefix CUST to customers');
+  assert.deepEqual(custValidation.modules, ['customers']);
+  assert.equal(custValidation.stats.totalReqs, 79);
+
+  const prjRtm = computeTraceabilityReport(REPO_ROOT, { module: 'PRJ' });
+  assert.deepEqual(prjRtm.modules, ['projects'], 'computeTraceabilityReport({ module: "PRJ" }) must resolve prefix PRJ to projects');
+  assert.equal(prjRtm.summary.totalReqs, 104);
+
+  const loginByTcPrefixSummary = computeTestSummaryReport(REPO_ROOT, { module: 'CRM_LOGIN_TC_' });
+  assert.deepEqual(
+    loginByTcPrefixSummary.modules,
+    ['login'],
+    'computeTestSummaryReport({ module: "CRM_LOGIN_TC_" }) must resolve TC prefix to login'
+  );
+
+  const unknownModValidation = validateDocsTree(REPO_ROOT, { module: 'nonexistent_module_xyz' });
+  assert.equal(unknownModValidation.valid, false, 'validateDocsTree must fail when options.module does not exist');
+  assert.ok(
+    unknownModValidation.referentialErrors.some((e) =>
+      e.message.includes('Unknown target module "nonexistent_module_xyz"')
+    ),
+    'validateDocsTree must report Unknown target module in referentialErrors'
+  );
+
+  const tmpParityAndOrphanRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parity-and-orphan-test-'));
+  try {
+    const authReqDir = path.join(tmpParityAndOrphanRoot, 'docs', 'requirements', 'auth');
+    const ordReqDir = path.join(tmpParityAndOrphanRoot, 'docs', 'requirements', 'orders');
+    const authTcDir = path.join(tmpParityAndOrphanRoot, 'docs', 'testcases', 'auth');
+    const ordTcDir = path.join(tmpParityAndOrphanRoot, 'docs', 'testcases', 'orders');
+    const authBugDir = path.join(tmpParityAndOrphanRoot, 'docs', 'bugs', 'auth');
+    const testsAuthDir = path.join(tmpParityAndOrphanRoot, 'tests', 'auth');
+    const testsOrdDir = path.join(tmpParityAndOrphanRoot, 'tests', 'orders');
+    for (const d of [authReqDir, ordReqDir, authTcDir, ordTcDir, authBugDir, testsAuthDir, testsOrdDir]) {
+      fs.mkdirSync(d, { recursive: true });
+    }
+
+    fs.writeFileSync(
+      path.join(authReqDir, 'requirements_auth.md'),
+      [
+        '# Auth Reqs',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-AUTH-01 | Login | Desc | AC | 🟢 Active | — | UI |',
+        '| REQ-AUTH-02 | SSO | Desc | AC | ⚪ Out of scope | — | UI |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(ordReqDir, 'requirements_orders.md'),
+      [
+        '# Orders Reqs',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-ORD-01 | Create Order | Desc | AC | 🟢 Active | — | UI |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(authTcDir, 'test_cases_auth.md'),
+      [
+        '# Auth TCs',
+        '## Ngoài phạm vi kiểm thử',
+        '| REQ ID | Lý do |',
+        '|---|---|',
+        '| REQ-AUTH-02 | Out of scope |',
+        '## Danh sách TC',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_AUTH_TC_001 | REQ-AUTH-01 | AUTH | High | Login ok | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(ordTcDir, 'test_cases_orders.md'),
+      [
+        '# Orders TCs',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_ORD_TC_001 | REQ-ORD-01 | ORD | High | Order ok | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(authBugDir, 'BUG_auth_100_TC001.md'),
+      [
+        '# [BUG] Auth failure',
+        '## Thông tin chung',
+        '- **ID:** BUG_auth_100_TC001',
+        '- **Mức độ nghiêm trọng (Severity):** 🔴 Critical',
+        '- **Độ ưu tiên (Priority):** P1',
+        '- **Test case liên quan:** CRM_AUTH_TC_001',
+        '- **REQ ID liên quan:** REQ-AUTH-01',
+      ].join('\n'),
+      'utf8'
+    );
+
+    // Deliberately put wrong counts in Section 2 summary tables of requirements/README.md, testcases/README.md, and bugs/README.md
+    fs.writeFileSync(
+      path.join(tmpParityAndOrphanRoot, 'docs', 'requirements', 'README.md'),
+      [
+        '# Danh mục Requirements',
+        '## 1. Bảng danh mục module',
+        '| Module | Prefix | Trạng thái recon | Mức phủ tài liệu | Tài liệu | REQ đã dùng | Mã kế tiếp | AMB treo | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| Xác thực | `AUTH` | ✅ Đã có tài liệu | 🟩 Đầy đủ | [auth/requirements_auth.md](auth/requirements_auth.md) | `REQ-AUTH-01` → `REQ-AUTH-02` (2) | `REQ-AUTH-03` | — | 2026-10-17 |',
+        '| Đơn hàng | `ORD` | ✅ Đã có tài liệu | 🟩 Đầy đủ | [orders/requirements_orders.md](orders/requirements_orders.md) | `REQ-ORD-01` → `REQ-ORD-01` (1) | `REQ-ORD-02` | — | 2026-10-17 |',
+        '',
+        '## 2. Trạng thái REQ toàn hệ thống',
+        '| Trạng thái | Số lượng | Chi tiết |',
+        '|---|---|---|',
+        '| 🟢 Active | 10 | lệch |',
+        '| ⚪ Chưa implement | 5 | lệch |',
+        '| **Tổng** | **99** | |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tmpParityAndOrphanRoot, 'docs', 'testcases', 'README.md'),
+      [
+        '# Danh mục Test Cases',
+        '## 1. Danh mục module đã có test cases',
+        '| Module | Prefix TC ID | Dải đã dùng | Mã kế tiếp | Số TC | Độ hạt | REQ bao phủ | Tài liệu | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| Xác thực | `CRM_AUTH_TC_` | `001` → `001` | `002` | 1 | GỘP | 1/1 | [auth/test_cases_auth.md](auth/test_cases_auth.md) | 2026-10-17 |',
+        '| Đơn hàng | `CRM_ORD_TC_` | `001` → `001` | `002` | 1 | GỘP | 1/1 | [orders/test_cases_orders.md](orders/test_cases_orders.md) | 2026-10-17 |',
+        '',
+        '## 2. Độ phủ so với requirements',
+        '| Module | REQ có tài liệu | REQ trong phạm vi TC | REQ đã có ≥1 TC | Độ phủ | Ghi chú |',
+        '|---|---|---|---|---|---|',
+        '| `AUTH` | 50 | 40 | 30 | 100% | lệch cả 3 cột |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tmpParityAndOrphanRoot, 'docs', 'bugs', 'README.md'),
+      [
+        '# Danh mục Bug',
+        '## 1. Danh mục bug',
+        '| Mã bug | Module | Tiêu đề ngắn | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+        '|---|---|---|---|---|---|---|---|',
+        '| [BUG_auth_100_TC001](auth/BUG_auth_100_TC001.md) | `AUTH` | Auth failure | 🔴 Critical | P1 | 🔴 **Đang mở** | `CRM_AUTH_TC_001` | 2026-10-17 |',
+        '',
+        '## 2. Thống kê theo trạng thái',
+        '| Trạng thái | Số lượng | Ý nghĩa |',
+        '|---|---|---|',
+        '| 🔴 Đang mở | 5 | lệch |',
+        '| 🟢 Đã đóng | 2 | lệch |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const parityRes = validateDocsTree(tmpParityAndOrphanRoot);
+    assert.equal(parityRes.valid, false);
+    assert.ok(
+      parityRes.referentialErrors.some((e) =>
+        e.message.includes('Requirements status summary count mismatch for "🟢 Active": summary table declares 10 but 2 REQs were found')
+      ),
+      'validateDocsTree must detect per-status "🟢 Active" count mismatch in docs/requirements/README.md'
+    );
+    assert.ok(
+      parityRes.referentialErrors.some((e) =>
+        e.message.includes('Requirements status summary count mismatch for "⚪ Chưa implement": summary table declares 5 but 1 REQs were found')
+      ),
+      'validateDocsTree must detect per-status "⚪ Chưa implement" count mismatch in docs/requirements/README.md'
+    );
+    assert.ok(
+      parityRes.referentialErrors.some((e) =>
+        e.message.includes('Requirements status summary total mismatch: summary table declares 99 total REQs but 3 REQs were found')
+      ),
+      'validateDocsTree must detect Section 2 total REQ mismatch in docs/requirements/README.md'
+    );
+    assert.ok(
+      parityRes.referentialErrors.some((e) =>
+        e.message.includes('Requirements status summary breakdown mismatch: status rows sum to 15 but total row declares 99')
+      ),
+      'validateDocsTree must detect Section 2 breakdown row sum mismatch in docs/requirements/README.md'
+    );
+    assert.ok(
+      parityRes.referentialErrors.some((e) =>
+        e.message.includes('Test Cases coverage table "REQ có tài liệu" mismatch for module "auth": table declares 50 but 2 REQs were found')
+      ),
+      'validateDocsTree must detect Section 2 "REQ có tài liệu" mismatch in docs/testcases/README.md'
+    );
+    assert.ok(
+      parityRes.referentialErrors.some((e) =>
+        e.message.includes('Test Cases coverage table "REQ trong phạm vi TC" mismatch for module "auth": table declares 40 but 1 in-scope REQs were found')
+      ),
+      'validateDocsTree must detect Section 2 "REQ trong phạm vi TC" mismatch in docs/testcases/README.md'
+    );
+    assert.ok(
+      parityRes.referentialErrors.some((e) =>
+        e.message.includes('Test Cases coverage table "REQ đã có ≥1 TC" mismatch for module "auth": table declares 30 but 1 covered REQs were found')
+      ),
+      'validateDocsTree must detect Section 2 "REQ đã có ≥1 TC" mismatch in docs/testcases/README.md'
+    );
+    assert.ok(
+      parityRes.referentialErrors.some((e) =>
+        e.message.includes('Bug Catalog status summary count mismatch for "🔴 Đang mở": summary table declares 5 but Bug Catalog has 1')
+      ),
+      'validateDocsTree must detect Section 2 open bug count mismatch in docs/bugs/README.md'
+    );
+    assert.ok(
+      parityRes.referentialErrors.some((e) =>
+        e.message.includes('Bug Catalog status summary count mismatch for "🟢 Đã đóng": summary table declares 2 but Bug Catalog has 0')
+      ),
+      'validateDocsTree must detect Section 2 closed bug count mismatch in docs/bugs/README.md'
+    );
+
+    // Verify out-of-scope table column-0 isolation (mentioning REQ-AUTH-01 in Lý do column must not mark REQ-AUTH-01 out-of-scope)
+    // and verify unknown REQ ID & Bảng Đối Soát Coverage validation in test_cases_<module>.md
+    fs.writeFileSync(
+      path.join(authTcDir, 'test_cases_auth.md'),
+      [
+        '# Auth TCs',
+        '## Ngoài phạm vi kiểm thử',
+        '| REQ ID | Lý do |',
+        '|---|---|',
+        '| REQ-AUTH-02 | Đã gộp vào REQ-AUTH-01 |',
+        '| REQ-AUTH-99 | Unknown out of scope REQ |',
+        '## Danh sách TC',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_AUTH_TC_001 | REQ-AUTH-01 | AUTH | High | Login ok | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+        '## Bảng Đối Soát Coverage',
+        '| REQ ID | Số TC | Trạng thái |',
+        '|---|---|---|',
+        '| REQ-AUTH-01 | 5 | ✅ Covered |',
+        '| REQ-AUTH-98 | 1 | ✅ Covered |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const oosAndCovCheck = validateDocsTree(tmpParityAndOrphanRoot, { module: 'AUTH' });
+    assert.ok(
+      oosAndCovCheck.referentialErrors.some((e) =>
+        e.message.includes('Out-of-scope table references unknown REQ ID "REQ-AUTH-99"')
+      ),
+      'validateDocsTree must flag unknown REQ ID in out-of-scope table'
+    );
+    assert.ok(
+      oosAndCovCheck.referentialErrors.some((e) =>
+        e.message.includes('Coverage table references unknown REQ ID "REQ-AUTH-98"')
+      ),
+      'validateDocsTree must flag unknown REQ ID in Bảng Đối Soát Coverage'
+    );
+    assert.ok(
+      oosAndCovCheck.referentialErrors.some((e) =>
+        e.message.includes('Coverage table "Số TC" mismatch for "REQ-AUTH-01": table declares 5 but 1 TCs reference "REQ-AUTH-01"')
+      ),
+      'validateDocsTree must flag TC count mismatch in Bảng Đối Soát Coverage'
+    );
+
+    const authRtmColIsolation = computeTraceabilityReport(tmpParityAndOrphanRoot, { module: 'AUTH' });
+    assert.equal(
+      authRtmColIsolation.summary.inScopeReqs,
+      1,
+      'Mentioning REQ-AUTH-01 in the Lý do column of out-of-scope table must not mark REQ-AUTH-01 as out-of-scope'
+    );
+    assert.equal(authRtmColIsolation.summary.outOfScopeReqs, 1);
+
+    // Verify fallback prefix resolution when Tài liệu column in requirements/README.md is "—"
+    fs.writeFileSync(
+      path.join(tmpParityAndOrphanRoot, 'docs', 'requirements', 'README.md'),
+      [
+        '# Danh mục Requirements',
+        '## 1. Bảng danh mục module',
+        '| Module | Prefix | Trạng thái recon | Mức phủ tài liệu | Tài liệu | REQ đã dùng | Mã kế tiếp | AMB treo | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| Đơn hàng | `ORD` | 🟨 Đang khảo sát | ⬜ Trắng | — | — | `REQ-ORD-01` | — | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+    const ordFallbackRes = computeTraceabilityReport(tmpParityAndOrphanRoot, { module: 'ORD' });
+    assert.deepEqual(
+      ordFallbackRes.modules,
+      ['orders'],
+      'resolveTargetModule must resolve prefix ORD to orders via fallback artifacts even when Tài liệu in requirements/README.md is —'
+    );
+    assert.equal(ordFallbackRes.summary.totalReqs, 1);
+
+    // Verify secondary-system (_book-api) catalogs in testcases/_book-api/README.md and bugs/_book-api/README.md
+    // and ensure bugs cataloged in secondary system do not trigger false-positive missing-bug errors in primary bugs/README.md
+    const secReqDir = path.join(tmpParityAndOrphanRoot, 'docs', 'requirements', '_book-api', 'auth');
+    const secTcDir = path.join(tmpParityAndOrphanRoot, 'docs', 'testcases', '_book-api', 'auth');
+    const secBugDir = path.join(tmpParityAndOrphanRoot, 'docs', 'bugs', '_book-api', 'auth');
+    for (const d of [secReqDir, secTcDir, secBugDir]) {
+      fs.mkdirSync(d, { recursive: true });
+    }
+    fs.writeFileSync(
+      path.join(secReqDir, 'requirements_auth.md'),
+      [
+        '# Book API Auth Reqs',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-BK-AUTH-01 | Token | Desc | AC | 🟢 Active | — | API |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(secTcDir, 'test_cases_auth.md'),
+      [
+        '# Book API Auth TCs',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| BK_AUTH_TC_001 | REQ-BK-AUTH-01 | BK-AUTH | High | Token ok | None | 1. Call | None | 1. 200 | High | Yes | API | @Smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(secBugDir, 'BUG_auth_200_TC001.md'),
+      [
+        '# [BUG] Secondary API auth failure',
+        '## Thông tin chung',
+        '- **ID:** BUG_auth_200_TC001',
+        '- **Mức độ nghiêm trọng (Severity):** 🟠 Major',
+        '- **Độ ưu tiên (Priority):** P2',
+        '- **Test case liên quan:** BK_AUTH_TC_001',
+        '- **REQ ID liên quan:** REQ-BK-AUTH-01',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tmpParityAndOrphanRoot, 'docs', 'requirements', '_book-api', 'README.md'),
+      [
+        '# Book API Requirements',
+        '| Module | Prefix | Trạng thái recon | Mức phủ tài liệu | Tài liệu | REQ đã dùng | Mã kế tiếp | AMB treo | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| Auth API | `BK-AUTH` | ✅ Đã có tài liệu | 🟩 Đầy đủ | [auth/requirements_auth.md](auth/requirements_auth.md) | `REQ-BK-AUTH-01` → `REQ-BK-AUTH-01` (1) | `REQ-BK-AUTH-02` | — | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tmpParityAndOrphanRoot, 'docs', 'testcases', '_book-api', 'README.md'),
+      [
+        '# Book API Test Cases',
+        '| Module | Prefix TC ID | Dải đã dùng | Mã kế tiếp | Số TC | Độ hạt | REQ bao phủ | Tài liệu | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| Auth API | `BK_AUTH_TC_` | `001` → `001` | `002` | 1 | GỘP | 1/1 | [auth/test_cases_auth.md](auth/test_cases_auth.md) | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tmpParityAndOrphanRoot, 'docs', 'bugs', '_book-api', 'README.md'),
+      [
+        '# Book API Bugs',
+        '## 1. Danh mục bug',
+        '| Mã bug | Module | Tiêu đề ngắn | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+        '|---|---|---|---|---|---|---|---|',
+        '| [BUG_auth_200_TC001](auth/BUG_auth_200_TC001.md) | `BK-AUTH` | Secondary API auth failure | 🟠 Major | P2 | 🔴 **Đang mở** | `BK_AUTH_TC_001` | 2026-10-17 |',
+        '## 2. Thống kê theo trạng thái',
+        '| Trạng thái | Số lượng | Ý nghĩa |',
+        '|---|---|---|',
+        '| 🔴 Đang mở | 1 | open |',
+        '| 🟢 Đã đóng | 0 | closed |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const secRtmByPrefix = computeTraceabilityReport(tmpParityAndOrphanRoot, { module: 'BK-AUTH' });
+    assert.deepEqual(
+      secRtmByPrefix.modules,
+      ['_book-api/auth'],
+      'resolveTargetModule must resolve secondary-system prefix BK-AUTH to _book-api/auth'
+    );
+    const secCheck = validateDocsTree(tmpParityAndOrphanRoot);
+    assert.ok(
+      !secCheck.referentialErrors.some((e) => e.message.includes('BUG_auth_200_TC001')),
+      'Secondary-system bug cataloged in docs/bugs/_book-api/README.md must not trigger false-positive missing-bug error in primary docs/bugs/README.md'
+    );
+
+    // Module-scoped two-stage orphanScripts filtering test:
+    // - CRM_AUTH_TC_999 (matches AUTH prefix) and LEGACY_UNKNOWN_TC_777 (non-standard TC ID in auth-smoke.spec.ts) -> included in AUTH
+    // - CRM_ORD_TC_888 placed inside tests/auth/auth.spec.ts -> excluded from AUTH because its TC ID explicitly belongs to ORD, and included in ORD
+    fs.writeFileSync(
+      path.join(testsAuthDir, 'auth.spec.ts'),
+      'test("CRM_AUTH_TC_001 and orphan CRM_AUTH_TC_999 and cross-module CRM_ORD_TC_888", async () => {});\n',
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tmpParityAndOrphanRoot, 'tests', 'auth-smoke.spec.ts'),
+      'test("non-standard orphan LEGACY_UNKNOWN_TC_777 in auth-smoke.spec.ts", async () => {});\n',
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(testsOrdDir, 'orders.spec.ts'),
+      'test("CRM_ORD_TC_001", async () => {});\n',
+      'utf8'
+    );
+
+    const authScopedRtm = computeTraceabilityReport(tmpParityAndOrphanRoot, { module: 'AUTH' });
+    assert.deepEqual(
+      authScopedRtm.orphanScripts.map((o) => o.tcId).sort(),
+      ['CRM_AUTH_TC_999', 'LEGACY_UNKNOWN_TC_777'],
+      'Module-scoped computeTraceabilityReport({ module: "AUTH" }) must include CRM_AUTH_TC_999 and path-matched LEGACY_UNKNOWN_TC_777 while excluding CRM_ORD_TC_888'
+    );
+
+    const ordScopedRtm = computeTraceabilityReport(tmpParityAndOrphanRoot, { module: 'ORD' });
+    assert.deepEqual(
+      ordScopedRtm.orphanScripts.map((o) => o.tcId),
+      ['CRM_ORD_TC_888'],
+      'Module-scoped computeTraceabilityReport({ module: "ORD" }) must claim CRM_ORD_TC_888 by TC ID prefix even when located in another file'
+    );
+
+    const allRtm = computeTraceabilityReport(tmpParityAndOrphanRoot);
+    assert.deepEqual(
+      allRtm.orphanScripts.map((o) => o.tcId).sort(),
+      ['CRM_AUTH_TC_999', 'CRM_ORD_TC_888', 'LEGACY_UNKNOWN_TC_777'],
+      'Unscoped computeTraceabilityReport must include orphanScripts across all modules'
+    );
+  } finally {
+    fs.rmSync(tmpParityAndOrphanRoot, { recursive: true, force: true });
+  }
 });
 
+test('Seam 16: Real Bug/Execution Parsing Fidelity, Jira/Xray Edge Cases, and Metadata/AMB/User-Guide Parity Gates', async () => {
+  // 1. Real repository bug reports preserve question-key bold KV, multi-line proposedFix, and notesOther
+  const bug018Text = fs.readFileSync(
+    path.join(REPO_ROOT, 'docs', 'bugs', 'login', 'BUG_login_1787226515_TC018.md'),
+    'utf8'
+  );
+  const parsedBug018 = parseBugFile(bug018Text, 'BUG_login_1787226515_TC018.md');
+  assert.match(
+    parsedBug018.notesOther,
+    /Đây có thực sự là bug không\?.*Cần cân nhắc kỹ trước khi fix/s,
+    'parseBugFile must preserve bold question keys (**Đây có thực sự là bug không?**) in notesOther'
+  );
 
+  const bug029Text = fs.readFileSync(
+    path.join(REPO_ROOT, 'docs', 'bugs', 'login', 'BUG_login_1787226517_TC029.md'),
+    'utf8'
+  );
+  const parsedBug029 = parseBugFile(bug029Text, 'BUG_login_1787226517_TC029.md');
+  assert.match(
+    parsedBug029.notesOther,
+    /Đây có phải hành vi mong muốn không\?/,
+    'parseBugFile must preserve **Đây có phải hành vi mong muốn không?** in notesOther'
+  );
 
+  const bug039Text = fs.readFileSync(
+    path.join(REPO_ROOT, 'docs', 'bugs', 'login', 'BUG_login_1785678750_TC039.md'),
+    'utf8'
+  );
+  const parsedBug039 = parseBugFile(bug039Text, 'BUG_login_1785678750_TC039.md');
+  assert.match(
+    parsedBug039.proposedFix,
+    /Cấu hình web server redirect.*Strict-Transport-Security.*12 lỗi CORS font/s,
+    'parseBugFile must capture multi-line continuation under **Đề xuất:** into proposedFix'
+  );
+  assert.match(
+    parsedBug039.notesOther,
+    /Yếu tố giảm nhẹ.*Vì sao vẫn xếp Critical/s,
+    'parseBugFile must capture multi-line continuation under Ghi chú bổ sung into notesOther'
+  );
 
+  // 2. Real execution report preserves raw Markdown evidence image links and Section 3 detailed Ghi chú
+  const realExecText = fs.readFileSync(
+    path.join(REPO_ROOT, 'docs', 'executions', 'login', 'run_1787215085', 'execution_report.md'),
+    'utf8'
+  );
+  const parsedRealExec = parseExecutionReport(
+    realExecText,
+    'docs/executions/login/run_1787215085/execution_report.md'
+  );
+  const tc016Exec = parsedRealExec.tcs.find((t) => t.id === 'CRM_LOGIN_TC_016');
+  assert.ok(tc016Exec, 'CRM_LOGIN_TC_016 must be parsed from real execution_report.md');
+  assert.match(
+    tc016Exec.evidence,
+    /\(evidence\/TC_016_email_not_retained\.png\)/,
+    'parseExecutionReport must preserve Markdown image link targets in Evidence cells'
+  );
+  assert.match(
+    tc016Exec.note,
+    /PO đã xác nhận là lỗi hệ thống/,
+    'parseExecutionReport must preserve detailed Ghi chú from Section 3 FAIL detail tables'
+  );
 
+  // Also test parseBugFile & parseBugIndex with multi-word module, Jira Issue, and all 6 canonical statuses
+  const customBugMd = [
+    '# [BUG] Credit note rounding mismatch',
+    '## Thông tin chung',
+    '* **ID**: BUG_credit_notes_1700000001_TC005',
+    '* **Mức độ nghiêm trọng (Severity):** 🟠 Major',
+    '* **Độ ưu tiên (Priority):** P2',
+    '* **Jira Issue:** FIN-404',
+    '* **Test case liên quan:** CRM_CN_TC_005',
+    '* **REQ ID liên quan:** REQ-CN-02',
+  ].join('\n');
+  const parsedCustomBug = parseBugFile(customBugMd, 'BUG_credit_notes_1700000001_TC005.md');
+  assert.equal(parsedCustomBug.id, 'BUG_credit_notes_1700000001_TC005');
+  assert.equal(parsedCustomBug.module, 'credit_notes');
+  assert.equal(parsedCustomBug.jiraIssue, 'FIN-404');
 
+  const customCatalogMd = [
+    '# Danh mục Bug',
+    '| Mã bug | Module | Tiêu đề ngắn | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+    '|---|---|---|---|---|---|---|---|',
+    '| BUG_credit_notes_1700000001_TC005 | `CREDIT_NOTES` | Rounding | 🟠 Major | P2 | 🟡 **Fix một phần** (FIN-404) | CRM_CN_TC_005 | 2026-10-17 |',
+    '| BUG_credit_notes_1700000002_TC006 | — | Blocked env | 🟡 Minor | P3 | ⚪ **Không verify được** | CRM_CN_TC_006 | 2026-10-17 |',
+  ].join('\n');
+  const parsedCustomIdx = parseBugIndex(customCatalogMd, 'README.md');
+  assert.equal(parsedCustomIdx.rows.length, 2);
+  assert.equal(parsedCustomIdx.rows[0].status, 'PARTIAL');
+  assert.equal(parsedCustomIdx.rows[0].jiraIssue, 'FIN-404');
+  assert.equal(parsedCustomIdx.rows[1].status, 'CANNOT_VERIFY');
+  assert.equal(parsedCustomIdx.rows[1].module, 'credit_notes');
+
+  // 3. Jira utils markdownToAdf <-> adfToMarkdown round-trip for blockquote, italic, strikethrough
+  const jiraUtils = await import('./integrations/jira/utils.js');
+  const richMd = [
+    '> Quoted warning note',
+    '',
+    'Paragraph with **bold**, *italic*, ~~strikethrough~~, and `code`.',
+  ].join('\n');
+  const adfDoc = jiraUtils.markdownToAdf(richMd);
+  assert.equal(adfDoc.content[0].type, 'blockquote');
+  const roundTripMd = jiraUtils.adfToMarkdown(adfDoc);
+  assert.match(roundTripMd, /^> Quoted warning note/m);
+  assert.match(roundTripMd, /\*\*bold\*\*/);
+  assert.match(roundTripMd, /\*italic\*/);
+  assert.match(roundTripMd, /~~strikethrough~~/);
+  assert.match(roundTripMd, /`code`/);
+
+  // 4. Xray importer: testEntry.annotations fallback + JUnit <property name="test_key"> & XML entity/CDATA decoding
+  const xrayImporter = await import('./integrations/jira/xray_importer.js');
+  const pwConverted = xrayImporter.convertPlaywrightToXray({
+    suites: [
+      {
+        title: 'Suite',
+        specs: [
+          {
+            title: 'Test with testEntry annotations',
+            tests: [
+              {
+                annotations: [{ type: 'test_key', description: 'PROJ-888' }],
+                results: [{ status: 'passed', duration: 120, annotations: [] }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  assert.equal(pwConverted.payload.tests.length, 1);
+  assert.equal(pwConverted.payload.tests[0].testKey, 'PROJ-888');
+  assert.equal(pwConverted.payload.tests[0].status, 'PASSED');
+
+  const junitConverted = xrayImporter.convertJunitXmlToXray(
+    [
+      '<testsuite name="Suite">',
+      '  <testcase name="Login XML entities">',
+      '    <properties><property name="test_key" value="PROJ-889"/></properties>',
+      '    <failure message="Expected &quot;200&quot; &amp; &lt;ok&gt;"><![CDATA[Stack trace details]]></failure>',
+      '  </testcase>',
+      '</testsuite>',
+    ].join('\n')
+  );
+  assert.equal(junitConverted.payload.tests.length, 1);
+  assert.equal(junitConverted.payload.tests[0].testKey, 'PROJ-889');
+  assert.equal(junitConverted.payload.tests[0].status, 'FAILED');
+  assert.match(junitConverted.payload.tests[0].comment, /Expected "200" & <ok>/);
+  assert.match(junitConverted.payload.tests[0].comment, /Stack trace details/);
+  assert.ok(!junitConverted.payload.tests[0].comment.includes('CDATA'));
+
+  // 5. Secondary system Jira bug write-back & validateDocsTree metadata/AMB/user-guide/bug-status parity
+  const tmpEdgeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'validate-edge-gates-'));
+  try {
+    const reqDir = path.join(tmpEdgeRoot, 'docs', 'requirements', 'login');
+    const tcDir = path.join(tmpEdgeRoot, 'docs', 'testcases', 'login');
+    const ugDir = path.join(tmpEdgeRoot, 'docs', 'user-guides', 'login');
+    const secBugDir = path.join(tmpEdgeRoot, 'docs', 'bugs', '_book-api', 'auth');
+    for (const d of [reqDir, tcDir, ugDir, secBugDir]) {
+      fs.mkdirSync(d, { recursive: true });
+    }
+
+    const bugCreatorMod = await import('./integrations/jira/jira_bug_creator.js');
+    const secBugReadme = path.join(tmpEdgeRoot, 'docs', 'bugs', '_book-api', 'README.md');
+    const secBugFile = path.join(secBugDir, 'BUG_auth_300_TC001.md');
+    fs.writeFileSync(
+      secBugFile,
+      [
+        '# [BUG] Sec bug',
+        '## Thông tin chung',
+        '- **ID:** BUG_auth_300_TC001',
+        '- **Mức độ nghiêm trọng (Severity):** 🔴 Critical',
+        '- **Độ ưu tiên (Priority):** P1',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      secBugReadme,
+      [
+        '# Sec Bugs',
+        '| Mã bug | Module | Tiêu đề ngắn | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+        '|---|---|---|---|---|---|---|---|',
+        '| [BUG_auth_300_TC001](auth/BUG_auth_300_TC001.md) | `BK-AUTH` | Sec bug | 🔴 Critical | P1 | 🔴 **Đang mở** | `BK_AUTH_TC_001` | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+    bugCreatorMod.writeJiraKeyBackToBugFile(secBugFile, 'BK-101');
+    assert.match(
+      fs.readFileSync(secBugReadme, 'utf8'),
+      /BK-101/,
+      'writeJiraKeyBackToBugFile must update docs/bugs/_<system>/README.md for secondary system bugs'
+    );
+
+    // Write login module with intentional metadata, AMB, and user-guide mismatches
+    fs.writeFileSync(
+      path.join(reqDir, 'requirements_login.md'),
+      [
+        '# Login Reqs',
+        '| Mục | Giá trị |',
+        '|---|---|',
+        '| **Tổng số REQ** | **99** |',
+        '| **Dải mã đã dùng** | `REQ-LOGIN-01` → `REQ-LOGIN-02` · `AMB-01` → `AMB-02` |',
+        '| **Mã kế tiếp** | `REQ-LOGIN-05` · `AMB-05` |',
+        '| **Ambiguity còn treo** | **5** ❓ |',
+        '## Danh sách REQ',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-LOGIN-01 | Login | Desc | AC | 🟢 | — | DOM |',
+        '| REQ-LOGIN-02 | Logout | Desc | AC | 🟢 | — | DOM |',
+        '## Ambiguities',
+        '| Mã | Câu hỏi | Nguy cơ | Mức độ | Assumption tạm | Trạng thái | Kết luận |',
+        '|---|---|---|---|---|---|---|',
+        '| AMB-01 | Q1? | R1 | 🔴 | A1 | ✅ Đã trả lời | Done |',
+        '| AMB-02 | Q2? | R2 | 🟡 | A2 | ❓ Chờ trả lời | — |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join( tmpEdgeRoot, 'docs', 'requirements', 'README.md'),
+      [
+        '# Reqs Catalog',
+        '| Module | Prefix | Trạng thái recon | Mức phủ tài liệu | Tài liệu | REQ đã dùng | Mã kế tiếp | AMB treo | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| Đăng nhập | `LOGIN` | ✅ Đã có tài liệu | 🟩 Đầy đủ | [login/requirements_login.md](login/requirements_login.md) | `REQ-LOGIN-01` → `REQ-LOGIN-02` (2) | `REQ-LOGIN-03` | 2 🔴 · 0 🟡 (1 đã đóng) | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tcDir, 'test_cases_login.md'),
+      [
+        '# Login TCs',
+        '| Thông tin | Nội dung |',
+        '|---|---|',
+        '| **Dải TC ID** | `CRM_LOGIN_TC_001` → `CRM_LOGIN_TC_002` |',
+        '| **Mã kế tiếp** | `CRM_LOGIN_TC_009` |',
+        '## Danh sách TC',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_LOGIN_TC_001 | REQ-LOGIN-01 | LOGIN | High | S1 | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+        '| CRM_LOGIN_TC_002 | REQ-LOGIN-02 | LOGIN | High | S2 | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(ugDir, 'user_guide_login.md'),
+      [
+        '# User Guide Login',
+        '| | |',
+        '|---|---|',
+        '| Phiên bản tài liệu | v1.0 |',
+        '| Trạng thái | ✅ Đã phát hành |',
+        '## 6. Vùng chưa xác minh (nội bộ)',
+        '| Nội dung | Vì sao chưa xác minh | Ảnh hưởng |',
+        '|---|---|---|',
+        '| Item 1 | Reason 1 | Impact 1 |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tmpEdgeRoot, 'docs', 'user-guides', 'README.md'),
+      [
+        '# User Guides Catalog',
+        '| Module | Đối tượng đọc | Áp dụng cho phiên bản | Số việc | Phiên bản tài liệu | Còn ⚠️ chưa xác minh | Trạng thái phát hành | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|',
+        '| [Đăng nhập](login/user_guide_login.md) | Nội bộ | 2026 | 1 | v2.0 | **9** | ✅ Đã gỡ mục 6 | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    // Verify unknown_login does NOT falsely match login via cleanToken stripping
+    const unknownLoginRes = validateDocsTree(tmpEdgeRoot, { module: 'unknown_login' });
+    assert.ok(
+      unknownLoginRes.referentialErrors.some((e) => e.message.includes('Unknown target module "unknown_login"')),
+      'resolveTargetModule must not strip leading word_ from non-TC queries like unknown_login'
+    );
+
+    const edgeRes = validateDocsTree(tmpEdgeRoot);
+    assert.ok(
+      edgeRes.referentialErrors.some((e) => e.message.includes('Requirements metadata "Tổng số REQ" mismatch')),
+      'validateDocsTree must detect Tổng số REQ mismatch in requirements_<module>.md metadata'
+    );
+    assert.ok(
+      edgeRes.schemaViolations.some((e) => e.message.includes('Requirements metadata REQ ID range discontinuity')),
+      'validateDocsTree must detect REQ ID range discontinuity in requirements_<module>.md metadata'
+    );
+    assert.ok(
+      edgeRes.schemaViolations.some((e) => e.message.includes('Requirements metadata AMB ID range discontinuity')),
+      'validateDocsTree must detect AMB ID range discontinuity in requirements_<module>.md metadata'
+    );
+    assert.ok(
+      edgeRes.referentialErrors.some((e) => e.message.includes('Requirements metadata "Ambiguity còn treo" mismatch')),
+      'validateDocsTree must detect Ambiguity còn treo mismatch in requirements_<module>.md metadata'
+    );
+    assert.ok(
+      edgeRes.referentialErrors.some((e) => e.message.includes('Requirements Catalog "AMB treo" count mismatch for module "login" (🔴)')),
+      'validateDocsTree must detect AMB treo severity count mismatch in docs/requirements/README.md'
+    );
+    assert.ok(
+      edgeRes.schemaViolations.some((e) => e.message.includes('Test Cases metadata ID range discontinuity')),
+      'validateDocsTree must detect TC ID range discontinuity in test_cases_<module>.md metadata'
+    );
+    assert.ok(
+      edgeRes.referentialErrors.some((e) => e.message.includes('User Guides Catalog version mismatch for module "login"')),
+      'validateDocsTree must detect version mismatch between docs/user-guides/README.md and user_guide_<module>.md'
+    );
+    assert.ok(
+      edgeRes.referentialErrors.some((e) => e.message.includes('User Guides Catalog "Còn ⚠️ chưa xác minh" count mismatch')),
+      'validateDocsTree must detect unverified count mismatch between docs/user-guides/README.md and user_guide_<module>.md'
+    );
+    assert.ok(
+      edgeRes.referentialErrors.some((e) => e.message.includes('still contains internal section "Vùng chưa xác minh"')),
+      'validateDocsTree must detect released User Guide that still contains Section 6 Vùng chưa xác minh'
+    );
+
+    // 6. Verify extractBoldKV nested sub-bullets, headings/rules, and trailing unindented paragraphs
+    const nestedBug = parseBugFile(
+      [
+        '# [BUG] Nested sub-bullets & trailing paragraph',
+        '## Thông tin chung',
+        '- **ID:** BUG_login_20261017_TC099',
+        '- **Ngày phát hiện:** 2026-10-17',
+        '',
+        'Đoạn văn chung bên dưới không thuộc trường Ngày phát hiện.',
+        '> Blockquote lưu ý thêm',
+        '## Ghi chú thêm',
+        '- **Root cause (nếu đã biết):**',
+        '  - `AuthController` thiếu kiểm tra session',
+        '- **Đề xuất fix:**',
+        '  - **Bước 1:** Bổ sung middleware kiểm tra session',
+        '  - **Bước 2:** Thêm integration test',
+        '---',
+        '### Ghi chú phụ',
+        'Đoạn kết luận cuối trang.',
+      ].join('\n'),
+      'BUG_login_20261017_TC099.md'
+    );
+    assert.equal(
+      nestedBug.dateFound,
+      '2026-10-17',
+      'extractBoldKV must not append trailing unindented paragraphs or blockquotes after a blank line to single-line bullet keys'
+    );
+    assert.match(nestedBug.proposedFix, /\*\*Bước 1:\*\* Bổ sung middleware/);
+    assert.match(nestedBug.proposedFix, /\*\*Bước 2:\*\* Thêm integration test/);
+    assert.equal(
+      nestedBug.notesOther,
+      '',
+      'extractBoldKV must keep indented sub-bullets with bold labels inside their parent key instead of leaking into notesOther'
+    );
+
+    // 7. Verify parseExecutionReport merges distinct Section 2 + Section 3 notes and captures HTML <img> evidence
+    const mergedExec = parseExecutionReport(
+      [
+        '# Báo cáo thực thi — Module Login',
+        '| Thông tin | Nội dung |',
+        '|---|---|',
+        '| **Module** | `LOGIN` |',
+        '| **Run ID** | `run_300` |',
+        '## 2. Kết quả từng TC',
+        '| TC ID | Test Scenario | Kết quả | Bước fail | Ghi chú |',
+        '|---|---|---|---|---|',
+        '| CRM_LOGIN_TC_001 | Login fail | ❌ FAIL | Bước 2 | Redirect sai URL <img src="evidence/tc001.png"> |',
+        '## 3. Chi tiết TC FAIL',
+        '### CRM_LOGIN_TC_001 · Login fail',
+        '| Thuộc tính | Nội dung |',
+        '|---|---|',
+        '| **Ghi chú** | Root URL tự chuyển sang /admin/authentication |',
+      ].join('\n'),
+      'execution_report.md'
+    );
+    assert.equal(mergedExec.tcs.length, 1);
+    assert.equal(
+      mergedExec.tcs[0].note,
+      'Redirect sai URL <img src="evidence/tc001.png"> — Root URL tự chuyển sang /admin/authentication',
+      'parseExecutionReport must merge distinct Section 2 and Section 3 notes when Section 2 note does not say "xem chi tiết"'
+    );
+    assert.match(
+      mergedExec.tcs[0].evidence,
+      /evidence\/tc001\.png/,
+      'parseExecutionReport must capture HTML <img> evidence in Section 2 notes'
+    );
+
+    // 8. Verify extractEvidencePaths supports HTML <img> and backticked repo-relative paths
+    const evDir = path.join(tmpEdgeRoot, 'docs', 'executions', 'login', 'run_300', 'evidence');
+    fs.mkdirSync(evDir, { recursive: true });
+    const evImg1 = path.join(evDir, 'html_shot.png');
+    const evImg2 = path.join(evDir, 'backtick_shot.png');
+    fs.writeFileSync(evImg1, 'png1', 'utf8');
+    fs.writeFileSync(evImg2, 'png2', 'utf8');
+    const bugDirLogin = path.join(tmpEdgeRoot, 'docs', 'bugs', 'login');
+    fs.mkdirSync(bugDirLogin, { recursive: true });
+    const bugFilePath = path.join(bugDirLogin, 'BUG_login_300_TC001.md');
+    const extractedEv = bugCreatorMod.extractEvidencePaths(
+      [
+        '- HTML tag: <img src="../../executions/login/run_300/evidence/html_shot.png">',
+        '- Repo-relative backtick: `docs/executions/login/run_300/evidence/backtick_shot.png`',
+      ].join('\n'),
+      bugFilePath
+    );
+    assert.deepEqual(extractedEv, [evImg1, evImg2]);
+
+    // 9. Verify multi-file requirement module (stories/ or parts/) validates Tổng số REQ and Ambiguity còn treo across split files
+    const multiReqDir = path.join(tmpEdgeRoot, 'docs', 'requirements', 'projects');
+    const multiStoriesDir = path.join(multiReqDir, 'stories');
+    fs.mkdirSync(multiStoriesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(multiReqDir, 'requirements_projects.md'),
+      [
+        '# Projects Reqs',
+        '| Mục | Giá trị |',
+        '|---|---|',
+        '| **Tổng số REQ** | **5** |',
+        '| **Ambiguity còn treo** | **3** ❓ |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(multiStoriesDir, 'story_01.md'),
+      [
+        '# Story 01',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-PROJ-01 | Create project | Desc | AC | 🟢 | — | DOM |',
+        '## Ambiguities',
+        '| Mã | Câu hỏi | Nguy cơ | Mức độ | Assumption tạm | Trạng thái | Kết luận |',
+        '|---|---|---|---|---|---|---|',
+        '| AMB-01 | Open Q? | R1 | 🔴 | A1 | ❓ Chờ trả lời | — |',
+      ].join('\n'),
+      'utf8'
+    );
+    const multiRes = validateDocsTree(tmpEdgeRoot, { module: 'projects' });
+    assert.ok(
+      multiRes.referentialErrors.some(
+        (e) =>
+          e.file.includes('requirements_projects.md') &&
+          e.message.includes('Requirements metadata "Tổng số REQ" mismatch')
+      ),
+      'validateDocsTree must check Tổng số REQ on requirements_<module>.md even when REQs are split across stories/ or parts/'
+    );
+    assert.ok(
+      multiRes.referentialErrors.some(
+        (e) =>
+          e.file.includes('requirements_projects.md') &&
+          e.message.includes('Requirements metadata "Ambiguity còn treo" mismatch')
+      ),
+      'validateDocsTree must check Ambiguity còn treo on requirements_<module>.md against open AMBs aggregated across split files'
+    );
+  } finally {
+    fs.rmSync(tmpEdgeRoot, { recursive: true, force: true });
+  }
+});
+
+test('Seam 17: Viewer Core Edge Cases (Code Fences, Backticked Bug IDs, RTM Placeholders, Summary NOT_FIXED & Prefix Matching, Evidence Chips) and In-Process Viewer DOM Runtime', async () => {
+  // 1. extractBoldKV: fenced code blocks, '+' bullets, ordered list with bold items, and unindented paragraph separation
+  const kv = extractBoldKV([
+    '+ **Payload mẫu:**',
+    '```json',
+    '{',
+    '  "#comment": "not a heading",',
+    '  "pipe": "a | b"',
+    '}',
+    '',
+    '```',
+    '- **Đề xuất fix:**',
+    '1. **Backend:** Kiểm tra chữ ký số.',
+    '2. **Frontend:** Hiển thị thông báo lỗi.',
+    '- **Ngày phát hiện:** 2026-08-20',
+    'Đoạn văn rời phía dưới không được gộp vào Ngày phát hiện.',
+  ]);
+  assert.ok(kv['Payload mẫu'].includes('"#comment": "not a heading"'));
+  assert.ok(kv['Payload mẫu'].includes('"pipe": "a | b"'));
+  assert.equal(
+    kv['Đề xuất fix'],
+    '1. **Backend:** Kiểm tra chữ ký số.\n2. **Frontend:** Hiển thị thông báo lỗi.'
+  );
+  assert.equal(kv['Ngày phát hiện'], '2026-08-20');
+
+  // 2. isBugFile & parseBugFile: backticked Bug IDs, Mã bug alias, and placeholder Build / Version
+  const backtickBugMd = [
+    '# [BUG] Lỗi đăng nhập khi dùng mật khẩu có ký tự đặc biệt',
+    '## Thông tin chung',
+    '- **Mã bug:** `BUG_login_1787226599_TC099`',
+    '- **Severity:** 🔴 Critical',
+    '- **Priority:** P1',
+    '- **Môi trường:** `Staging`',
+    '- **Build / Version:** —',
+    '- **Test case liên quan:** `TC_LOGIN_099`',
+    '- **REQ ID liên quan:** `REQ-LOGIN-001`',
+    '- **Ngày phát hiện:** `2026-08-21`',
+  ].join('\n');
+  assert.equal(isBugFile(backtickBugMd), true);
+  const parsedBacktickBug = parseBugFile(backtickBugMd, 'BUG_login_1787226599_TC099.md');
+  assert.equal(parsedBacktickBug.id, 'BUG_login_1787226599_TC099');
+  assert.equal(parsedBacktickBug.module, 'login');
+  assert.equal(parsedBacktickBug.env, 'Staging');
+  assert.equal(parsedBacktickBug.build, '');
+  assert.equal(parsedBacktickBug.dateFound, '2026-08-21');
+
+  const idxParsed = parseBugIndex(
+    [
+      '| Mã Bug | Module | Tiêu đề | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+      '|---|---|---|---|---|---|---|---|',
+      '| `BUG_login_1787226599_TC099` | login | Tóm tắt từ README | 🔴 Critical | P1 | 🔴 Open | TC_LOGIN_099 | 2026-08-21 |',
+    ].join('\n'),
+    'README.md'
+  );
+  const deduped = dedupeBugs([...idxParsed.rows, parsedBacktickBug]);
+  assert.equal(deduped.length, 1);
+  assert.equal(deduped[0].kind, 'bug');
+  const catalogQuery = queryBugsCatalog(deduped);
+  assert.equal(
+    catalogQuery.alerts.missingRef.length,
+    1,
+    'Placeholder Build / Version (—) must be stripped to empty string so missingRef alert triggers'
+  );
+
+  // 3. parseRtm: non-automated text placeholders and declared status overrides
+  const rtmTables = parseMarkdownTables(
+    [
+      '## Ma trận truy vết',
+      '| REQ ID | Mô tả | TC IDs | Automation | Trạng thái |',
+      '|---|---|---|---|---|',
+      '| REQ-AUTH-001 | Đăng nhập | TC_AUTH_01, TC_AUTH_02 | Chưa automate | 🟡 Manual only |',
+      '| REQ-AUTH-002 | Quên mật khẩu | TC_AUTH_03, TC_AUTH_04 | auth.spec.ts | 🟠 Partial |',
+      '| REQ-AUTH-003 | Đổi mật khẩu | TC_AUTH_05, TC_AUTH_06 | 0/2 | 🟡 Mới có TC thủ công |',
+      '| REQ-AUTH-004 | SSO | — | Không có | 🔴 Chưa có TC |',
+    ].join('\n')
+  );
+  const rtm = parseRtm(rtmTables, 'rtm.md', 'RTM');
+  assert.equal(rtm.rtm.rows[0].nAuto, 0);
+  assert.equal(rtm.rtm.rows[0].status, 'MANUAL');
+  assert.equal(rtm.rtm.rows[1].nAuto, 1);
+  assert.equal(rtm.rtm.rows[1].status, 'PARTIALCOV');
+  assert.equal(rtm.rtm.rows[2].nAuto, 0);
+  assert.equal(rtm.rtm.rows[2].status, 'MANUAL');
+  assert.equal(rtm.rtm.rows[3].nAuto, 0);
+  assert.equal(rtm.rtm.rows[3].status, 'NOTCOVERED');
+
+  // 4. parseTestSummary: NOT_FIXED vs FIXED/CLOSED bug statuses and prefix/slug module matching
+  const summaryMd = [
+    '# Báo cáo Tổng hợp Kiểm thử',
+    '## Kết quả theo Module',
+    '| Module | Prefix | Tổng TC | PASS | FAIL | BLOCKED | SKIP | Pass rate | Nguồn |',
+    '|---|---|---|---|---|---|---|---|---|',
+    '| Customers (`CUST`) | CUST | 10 | 8 | 2 | 0 | 0 | 80.0% | run_01 |',
+    '## Danh sách Bug đang mở',
+    '| Mã Bug | Module | Tiêu đề | Severity | Priority | TC / REQ | Trạng thái |',
+    '|---|---|---|---|---|---|---|',
+    '| BUG_cust_100_TC01 | CUST | Lỗi 1 chưa fix | 🔴 Critical | P1 | TC_CUST_01 | ❌ NOT_FIXED |',
+    '| BUG_cust_101_TC02 | customers | Lỗi 2 sửa một phần | 🟠 High | P2 | TC_CUST_02 | 🟠 PARTIAL |',
+    '| BUG_cust_102_TC03 | CUST | Lỗi 3 đã đóng | 🟡 Medium | P3 | TC_CUST_03 | ✅ FIXED |',
+  ].join('\n');
+  const parsedSum = parseTestSummary(summaryMd, 'test_summary_report.md');
+  assert.equal(parsedSum.openBugs[0].status, 'OPEN');
+  assert.equal(parsedSum.openBugs[1].status, 'PARTIAL');
+  assert.equal(parsedSum.openBugs[2].status, 'CLOSED');
+  assert.equal(
+    parsedSum.modules[0].openBugs,
+    2,
+    'Module Customers (CUST) must match both CUST and customers non-CLOSED bugs'
+  );
+  assert.equal(parsedSum.totals.openBugsTotal, 2);
+
+  // 5. extractEvidenceImages & renderEvidenceHtml: backticked filename without slash, plain path with slash, markdown links
+  const evRaw =
+    'Ảnh: `TC_01_fail.png`, evidence/TC_02_fail.png, ![shot](<docs/executions/login/run_1/evidence/TC_03.png> "title")';
+  const emptyEv = extractEvidenceImages(evRaw, new Map());
+  assert.deepEqual(
+    emptyEv.items.map((i) => ({ baseName: i.baseName, loaded: i.loaded })),
+    [
+      { baseName: 'TC_03.png', loaded: false },
+      { baseName: 'TC_01_fail.png', loaded: false },
+      { baseName: 'TC_02_fail.png', loaded: false },
+    ]
+  );
+  assert.equal(emptyEv.missingCount, 3);
+  const loadedMap = new Map([['tc_01_fail.png', 'blob:mock/1']]);
+  const bugsEvHtml = renderEvidenceHtml(evRaw, loadedMap, 'bugs');
+  assert.ok(bugsEvHtml.includes('data-img="TC_01_fail.png"'));
+  assert.ok(bugsEvHtml.includes('ev-chip miss'));
+  assert.ok(bugsEvHtml.includes('2 ảnh còn thiếu'));
+
+  // 6. Jira ADF nested link marks and <br> hardBreak round-trip
+  const { adfToMarkdown, markdownToAdf } = await import('./integrations/jira/utils.js');
+  const mdWithFormattedLinks = [
+    'Xem ticket [`QA-101`](https://jira.example.com/browse/QA-101) và [**Spec**](https://jira.example.com/spec).',
+    '',
+    '| Bước | Kỳ vọng |',
+    '| --- | --- |',
+    '| Bước 1<br>Bước 2 | Hiển thị `OK` |',
+  ].join('\n');
+  const adfDoc = markdownToAdf(mdWithFormattedLinks);
+  const roundTripMd = adfToMarkdown(adfDoc);
+  assert.ok(roundTripMd.includes('[`QA-101`](https://jira.example.com/browse/QA-101)'));
+  assert.ok(roundTripMd.includes('[**Spec**](https://jira.example.com/spec)'));
+  assert.ok(roundTripMd.includes('Bước 1<br>Bước 2'));
+
+  // 7. In-process DOM execution of scripts/bugs-viewer/bundle.html and scripts/execution-viewer/bundle.html
+  function createViewerDomSandbox(htmlFilePath) {
+    const html = fs.readFileSync(htmlFilePath, 'utf8');
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch, `Missing <script> in ${htmlFilePath}`);
+    const elements = new Map();
+    const downloads = [];
+    const makeClassList = () => {
+      const set = new Set();
+      return {
+        add: (...cls) => cls.forEach((c) => set.add(c)),
+        remove: (...cls) => cls.forEach((c) => set.delete(c)),
+        toggle: (c, force) => {
+          const on = force === undefined ? !set.has(c) : Boolean(force);
+          if (on) set.add(c);
+          else set.delete(c);
+          return on;
+        },
+        contains: (c) => set.has(c),
+      };
+    };
+    const makeEl = (id = '') => ({
+      id,
+      value: '',
+      innerHTML: '',
+      textContent: '',
+      src: '',
+      download: '',
+      href: '',
+      dataset: {},
+      style: { display: '', cssText: '' },
+      classList: makeClassList(),
+      addEventListener() {},
+      removeAttribute(attr) {
+        if (attr === 'src') this.src = '';
+      },
+      appendChild() {},
+      remove() {},
+      click() {
+        if (this.download) downloads.push({ download: this.download, href: this.href });
+      },
+      closest() {
+        return null;
+      },
+    });
+    const tabs = ['tc', 'trend', 'bug', 'cov', 'sum'].map((t) => {
+      const el = makeEl();
+      el.dataset.tab = t;
+      return el;
+    });
+    const getEl = (sel) => {
+      if (!elements.has(sel)) {
+        const id = sel.startsWith('#') ? sel.slice(1) : '';
+        elements.set(sel, makeEl(id));
+      }
+      return elements.get(sel);
+    };
+    const storage = new Map();
+    const sandbox = {
+      console,
+      Blob,
+      Uint8Array,
+      DataView,
+      TextEncoder,
+      Map,
+      Set,
+      Promise,
+      Math,
+      Date,
+      JSON,
+      String,
+      Number,
+      Boolean,
+      Array,
+      Object,
+      RegExp,
+      setTimeout: (fn) => {
+        fn();
+        return 1;
+      },
+      URL: {
+        createObjectURL: (obj) => `blob:mock/${obj?.name || 'data'}`,
+        revokeObjectURL: () => {},
+      },
+      localStorage: {
+        getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+        setItem: (k, v) => storage.set(k, String(v)),
+        removeItem: (k) => storage.delete(k),
+      },
+      document: {
+        body: makeEl('body'),
+        querySelector: (sel) => getEl(sel),
+        querySelectorAll: (sel) => (sel === '.tab' ? tabs : []),
+        createElement: (tag) => makeEl(tag),
+        addEventListener() {},
+      },
+    };
+    sandbox.window = sandbox;
+    vm.runInNewContext(scriptMatch[1], sandbox, { filename: htmlFilePath });
+    return { sandbox, elements, getEl, downloads };
+  }
+
+  // 7a. Execute bugs-viewer/bundle.html in-process
+  const bugsEnv = createViewerDomSandbox(
+    path.join(REPO_ROOT, 'scripts', 'bugs-viewer', 'bundle.html')
+  );
+  bugsEnv.sandbox.addFiles([
+    { name: 'TC_099_fail.png' },
+    { name: 'BUG_login_1787226599_TC099.md', text: async () => backtickBugMd },
+  ]);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(bugsEnv.sandbox.__rows.length, 1);
+  assert.ok(bugsEnv.getEl('#rows').innerHTML.includes('BUG_login_1787226599_TC099'));
+  bugsEnv.sandbox.openDetail(bugsEnv.sandbox.__rows[0]);
+  assert.equal(bugsEnv.getEl('#detail').classList.contains('open'), true);
+  bugsEnv.sandbox.openLightbox('TC_099_fail.png');
+  assert.equal(bugsEnv.getEl('#lightbox').classList.contains('open'), true);
+  assert.equal(bugsEnv.getEl('#lbImg').src, 'blob:mock/TC_099_fail.png');
+  bugsEnv.sandbox.closeLightbox();
+  assert.equal(bugsEnv.getEl('#lightbox').classList.contains('open'), false);
+  bugsEnv.sandbox.toCsv();
+  bugsEnv.sandbox.toXlsx();
+  assert.equal(bugsEnv.downloads.length, 2);
+  assert.ok(bugsEnv.downloads[0].download.endsWith('.csv'));
+  assert.ok(bugsEnv.downloads[1].download.endsWith('.xlsx'));
+
+  // 7b. Execute execution-viewer/bundle.html in-process
+  const execEnv = createViewerDomSandbox(
+    path.join(REPO_ROOT, 'scripts', 'execution-viewer', 'bundle.html')
+  );
+  const sampleExecMd = fs.readFileSync(
+    path.join(REPO_ROOT, 'docs', 'executions', 'login', 'run_1787215085', 'execution_report.md'),
+    'utf8'
+  );
+  execEnv.sandbox.addFiles([
+    { name: 'TC_LOGIN_016_fail.png' },
+    { name: 'execution_report.md', text: async () => sampleExecMd },
+    { name: 'test_summary_report.md', text: async () => summaryMd },
+  ]);
+  await new Promise((r) => setImmediate(r));
+  assert.ok(execEnv.sandbox.__rows.length > 0);
+  execEnv.sandbox.openDetail(
+    execEnv.sandbox.__rows[0],
+    execEnv.sandbox.__rows[0].id,
+    execEnv.sandbox.__rows[0].scenario || '',
+    [
+      ['Kết quả', 'status'],
+      ['Evidence', 'evidence'],
+    ]
+  );
+  assert.equal(execEnv.getEl('#detail').classList.contains('open'), true);
+  execEnv.sandbox.setActiveTab('sum');
+  execEnv.sandbox.renderSummary();
+  assert.ok(execEnv.getEl('#sumContent').innerHTML.includes('Customers'));
+  execEnv.sandbox.toCsv();
+  execEnv.sandbox.toXlsx();
+  assert.equal(execEnv.downloads.length, 2);
+
+  // Exercise cov, trend, and bug tabs in execution-viewer DOM sandbox
+  const rtmSampleMd = [
+    '# Ma Trận Truy Vết (RTM) — Login',
+    '',
+    '| REQ ID | Mô tả | TC IDs | Automation | Trạng thái |',
+    '| --- | --- | --- | --- | --- |',
+    '| REQ-LOGIN-01 | Đăng nhập | LOGIN_TC_001 | `login.spec.ts` (1/1) | ✅ Đầy đủ |',
+  ].join('\n');
+  const retestSampleMd = [
+    '# Báo cáo Retest — Login · retest_1787299999',
+    '',
+    '| Trường | Giá trị |',
+    '| --- | --- |',
+    '| Module | Login |',
+    '| Retest ID | retest_1787299999 |',
+    '| Build | v1.0.2 |',
+    '',
+    '### BUG_login_1787226514_TC016',
+    '| Trường | Giá trị |',
+    '| --- | --- |',
+    '| Bug | BUG_login_1787226514_TC016 |',
+    '| Kết quả | ✅ FIXED |',
+    '| TC / REQ liên quan | CRM_LOGIN_TC_016 · REQ-LOGIN-05 |',
+  ].join('\n');
+  execEnv.sandbox.addFiles([
+    { name: 'traceability_matrix.md', text: async () => rtmSampleMd },
+    { name: 'retest_report.md', text: async () => retestSampleMd },
+  ]);
+  await new Promise((r) => setImmediate(r));
+  execEnv.sandbox.setActiveTab('cov');
+  execEnv.sandbox.renderCoverage();
+  assert.ok(execEnv.getEl('#covRows').innerHTML.includes('REQ-LOGIN-01'));
+  execEnv.sandbox.setActiveTab('trend');
+  execEnv.sandbox.render();
+  assert.ok(execEnv.getEl('#trendRows').innerHTML.includes('CRM_LOGIN_TC_016'));
+  execEnv.sandbox.setActiveTab('bug');
+  execEnv.sandbox.render();
+  assert.ok(execEnv.getEl('#bugRows').innerHTML.includes('BUG_login_1787226514_TC016'));
+});
+
+test('Seam 18: Multi-mark ADF, nested lists, extractBoldKV hardening, bug status/dedupe/module parity, total-row guard, multi-part run ordering, and testcases-viewer export', async () => {
+  const { adfToMarkdown, markdownToAdf } = await import('./integrations/jira/utils.js');
+  const {
+    extractEvidencePaths,
+    updateBugMarkdownWithJiraKey,
+    updateBugsCatalogWithJiraKey,
+  } = await import('./integrations/jira/jira_bug_creator.js');
+  const {
+    classifyBugStatus,
+    compareRunOrder,
+    computeExecutionTrend,
+    dedupeBugs,
+    extractBoldKV,
+    parseBugFile,
+    parseBugIndex,
+    parseExecutionReport,
+    parseMarkdownFile,
+    parseTestSummary,
+  } = await import('./viewer-core.mjs');
+  const { classifyReqStatus, computeTestSummaryReport, validateDocsTree } = await import(
+    './validate-docs.mjs'
+  );
+  const { exportCsv, exportXlsx } = await import('./testcases-viewer/src/lib/export.ts');
+
+  // 1. Multi-mark inline combinations, mixed-format links, nested lists, + bullets, and ~~~ code fences
+  const complexMd = [
+    'Đoạn có ***bold italic***, **bold with *italic* and `code`**, và link [Click **here** now](https://example.com/docs).',
+    '',
+    '- Parent 1',
+    '  - Child 1a',
+    '    1. Grandchild 1a-i',
+    '  - Child 1b',
+    '+ Parent 2',
+    '',
+    '~~~c++',
+    'int main() { return 0; }',
+    '~~~',
+  ].join('\n');
+  const complexAdf = markdownToAdf(complexMd);
+  const paraContent = complexAdf.content[0].content;
+  const boldItalicNode = paraContent.find((n) => n.text === 'bold italic');
+  assert.ok(boldItalicNode, 'Must parse ***bold italic*** into text node');
+  assert.equal(boldItalicNode.marks.some((m) => m.type === 'strong'), true);
+  assert.equal(boldItalicNode.marks.some((m) => m.type === 'em'), true);
+
+  const nestedCodeNode = paraContent.find((n) => n.text === 'code');
+  assert.ok(nestedCodeNode, 'Must parse `code` nested inside **bold**');
+  assert.equal(nestedCodeNode.marks.some((m) => m.type === 'code'), true);
+  assert.equal(nestedCodeNode.marks.some((m) => m.type === 'strong'), true);
+
+  const bulletListNode = complexAdf.content.find((n) => n.type === 'bulletList');
+  assert.ok(bulletListNode, 'Must parse bulletList');
+  assert.equal(bulletListNode.content.length, 2, 'Top-level bulletList must have 2 parent items');
+  const subBulletList = bulletListNode.content[0].content.find((n) => n.type === 'bulletList');
+  assert.ok(subBulletList, 'Parent 1 must contain nested bulletList');
+  const grandOrderedList = subBulletList.content[0].content.find((n) => n.type === 'orderedList');
+  assert.ok(grandOrderedList, 'Child 1a must contain nested orderedList');
+
+  const codeBlockNode = complexAdf.content.find((n) => n.type === 'codeBlock');
+  assert.ok(codeBlockNode, 'Must parse ~~~c++ code fence');
+  assert.equal(codeBlockNode.attrs.language, 'c++');
+
+  const roundTripComplex = adfToMarkdown(complexAdf);
+  assert.ok(roundTripComplex.includes('***bold italic***'));
+  assert.ok(roundTripComplex.includes('**`code`**'));
+  assert.ok(roundTripComplex.includes('[Click **here** now](https://example.com/docs)'));
+  assert.ok(roundTripComplex.includes('  - Child 1a\n    1. Grandchild 1a-i'));
+
+  // 2. extractBoldKV sibling bullet, table, and multi-line HTML comment isolation
+  const kvEdge = extractBoldKV([
+    '- **Test data đã dùng:** `user=admin`',
+    '- Ghi chú ngoài không có bold key',
+    '<!--',
+    'Multi-line comment should be ignored',
+    '-->',
+    '- **Môi trường:** Staging',
+    '| Cột A | Cột B |',
+    '| --- | --- |',
+    '| 1 | 2 |',
+    'Đoạn văn bên dưới bảng không thuộc Môi trường',
+  ]);
+  assert.equal(kvEdge['Test data đã dùng'], '`user=admin`');
+  assert.equal(kvEdge['Môi trường'], 'Staging');
+
+  // 3. Bug status classification, dedupeBugs metadata preservation, and numeric-first Bug ID module extraction
+  assert.equal(classifyBugStatus('✅ FIXED'), 'CLOSED');
+  assert.equal(classifyBugStatus('✅ Đã fix'), 'CLOSED');
+  assert.equal(classifyBugStatus('🟡 Đã fix, chờ retest'), 'PENDING');
+  assert.equal(classifyBugStatus('🟡 Chờ retest (Fixed by dev)'), 'PENDING');
+  assert.equal(classifyBugStatus('⚠️ Cần rà lại'), 'NEEDS_REVIEW');
+
+  const numIdBugMd = [
+    '# [BUG] Lỗi với mã bug bắt đầu bằng timestamp',
+    '',
+    '## Thông tin chung',
+    '- **Mã bug:** BUG_20260820_120000_TC001',
+    '- **Module:** Customers',
+    '- **Severity:** 🟠 Major',
+    '- **Priority:** P2',
+    '- **Trạng thái:** 🟡 Đã fix, chờ retest (PROJ-777)',
+  ].join('\n');
+  const parsedNumIdBug = parseBugFile(numIdBugMd, 'BUG_20260820_120000_TC001.md');
+  assert.equal(parsedNumIdBug.module, 'customers');
+  assert.equal(parsedNumIdBug.status, 'PENDING');
+  assert.equal(parsedNumIdBug.jiraIssue, 'PROJ-777');
+
+  const openBugFile = parseBugFile(
+    [
+      '# [BUG] Lỗi chưa có bảng retest',
+      '',
+      '## Thông tin chung',
+      '- **ID:** BUG_login_1787226500_TC002',
+      '- **Severity:** 🟠 Major',
+      '- **Priority:** P2',
+    ].join('\n'),
+    'BUG_login_1787226500_TC002.md'
+  );
+  const catalogReadme = parseBugIndex(
+    [
+      '| Mã Bug | Module | Tiêu đề | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| [BUG_login_1787226500_TC002](login/BUG_login_1787226500_TC002.md) | Login | Lỗi chưa có bảng retest | 🟠 Major | P2 | 🟡 Chờ retest (PROJ-888) | LOGIN_TC_002 | 2026-08-20 |',
+    ].join('\n'),
+    'README.md'
+  );
+  const dedupedA = dedupeBugs([...catalogReadme.rows, openBugFile]);
+  const dedupedB = dedupeBugs([openBugFile, ...catalogReadme.rows]);
+  assert.equal(dedupedA[0].status, 'PENDING');
+  assert.equal(dedupedA[0].jiraIssue, 'PROJ-888');
+  assert.equal(dedupedB[0].status, 'PENDING');
+  assert.equal(dedupedB[0].jiraIssue, 'PROJ-888');
+
+  // 4. parseTestSummary total-row guard and Phạm vi · Build · Môi trường metadata key
+  const summaryWithTotalsMd = [
+    '# Báo Cáo Tổng Hợp Kiểm Thử',
+    '',
+    '| Trường | Giá trị |',
+    '| --- | --- |',
+    '| Phạm vi · Build · Môi trường | Sprint 12 · v2.1.0 · Staging |',
+    '',
+    '## 4. Kết Quả Theo Module',
+    '| Module | Prefix | Tổng TC | PASS | FAIL | BLOCKED | SKIPPED | Pass Rate | Nguồn |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| Login (`LOGIN`) | LOGIN | 10 | 8 | 2 | 0 | 0 | 80.0% | `run_1` |',
+    '| **Tổng** | — | **10** | **8** | **2** | **0** | **0** | **80.0%** | — |',
+    '',
+    '## 5. Tổng Hợp Lỗi',
+    '| Severity | Tổng số | Đang mở | Đã đóng |',
+    '| --- | --- | --- | --- |',
+    '| 🟠 Major | 2 | 1 | 1 |',
+    '| **Tổng cộng** | **2** | **1** | **1** |',
+  ].join('\n');
+  const parsedSummaryWithTotals = parseTestSummary(summaryWithTotalsMd, 'test_summary_report.md');
+  assert.equal(parsedSummaryWithTotals.module, 'Sprint 12 · v2.1.0 · Staging');
+  assert.equal(parsedSummaryWithTotals.modules.length, 1);
+  assert.equal(parsedSummaryWithTotals.totals.total, 10);
+  assert.equal(parsedSummaryWithTotals.totals.pass, 8);
+  assert.equal(parsedSummaryWithTotals.defectSummary.length, 1);
+  assert.equal(parsedSummaryWithTotals.totals.openBugsTotal, 1);
+
+  // 5. extractEvidencePaths with <...> and title, updateBugMarkdownWithJiraKey with Mã bug, and updateBugsCatalogWithJiraKey blockquote safety
+  const tmpJiraDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jira-edge-18-'));
+  try {
+    const evDir = path.join(tmpJiraDir, 'docs', 'executions', 'login', 'run_1', 'evidence');
+    const bugDir = path.join(tmpJiraDir, 'docs', 'bugs', 'login');
+    fs.mkdirSync(evDir, { recursive: true });
+    fs.mkdirSync(bugDir, { recursive: true });
+    const imgPath = path.join(evDir, 'shot_1.png');
+    fs.writeFileSync(imgPath, 'png', 'utf8');
+
+    const bugFile = path.join(bugDir, 'BUG_login_1787226514_TC016.md');
+    const bugContent = [
+      '# [BUG] Test Jira write-back',
+      '',
+      '## Thông tin chung',
+      '- **Mã bug:** BUG_login_1787226514_TC016',
+      '- **Severity:** 🟠 Major',
+      '',
+      '## Evidence',
+      '- ![Shot](<../../executions/login/run_1/evidence/shot_1.png> "Screenshot 1")',
+    ].join('\n');
+    fs.writeFileSync(bugFile, bugContent, 'utf8');
+
+    const resolvedEv = extractEvidencePaths(bugContent, bugFile);
+    assert.deepEqual(resolvedEv, [imgPath]);
+
+    assert.equal(updateBugMarkdownWithJiraKey(bugFile, 'QA-555'), true);
+    const updatedBugMd = fs.readFileSync(bugFile, 'utf8');
+    assert.ok(updatedBugMd.includes('- **Mã bug:** BUG_login_1787226514_TC016\n- **Jira Issue:** QA-555'));
+
+    const readmeFile = path.join(tmpJiraDir, 'docs', 'bugs', 'README.md');
+    fs.writeFileSync(
+      readmeFile,
+      [
+        '| Mã Bug | Module | Tiêu đề | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| [BUG_login_1787226514_TC016](login/BUG_login_1787226514_TC016.md) | Login | Test | 🟠 Major | P2 | 🔴 Đang mở | LOGIN_TC_016 | 2026-08-20 |',
+        '',
+        '> Lưu ý: `BUG_login_1787226514_TC016` cần kiểm tra lại trên môi trường Staging.',
+      ].join('\n'),
+      'utf8'
+    );
+    assert.equal(
+      updateBugsCatalogWithJiraKey(readmeFile, 'BUG_login_1787226514_TC016', 'QA-555'),
+      true
+    );
+    const updatedReadme = fs.readFileSync(readmeFile, 'utf8');
+    assert.ok(updatedReadme.includes('| 🔴 Đang mở (QA-555) |'));
+    assert.ok(
+      updatedReadme.includes(
+        '> Lưu ý: `BUG_login_1787226514_TC016` cần kiểm tra lại trên môi trường Staging.'
+      ) && !updatedReadme.includes('Staging. (QA-555)')
+    );
+  } finally {
+    fs.rmSync(tmpJiraDir, { recursive: true, force: true });
+  }
+
+  // 6. Multi-part timestamp ordering in compareRunOrder & computeExecutionTrend + backticked note evidence in parseExecutionReport
+  assert.ok(compareRunOrder('run_2026_08_20_1500', 'run_2026_08_21_0900') < 0);
+  assert.ok(compareRunOrder('run_2026-08-20', 'run_2026-09-05') < 0);
+
+  const runDay1 = parseExecutionReport(
+    [
+      '# Execution Report — Login · run_2026_08_20_1500',
+      '| Trường | Giá trị |',
+      '| --- | --- |',
+      '| Module | Login |',
+      '| Run ID | run_2026_08_20_1500 |',
+      '',
+      '| TC ID | Kịch bản | Kết quả | Ghi chú |',
+      '| --- | --- | --- | --- |',
+      '| LOGIN_TC_001 | Đăng nhập | ❌ FAIL | Ảnh lỗi `evidence/TC001_fail.png` |',
+    ].join('\n'),
+    'run_2026_08_20_1500/execution_report.md'
+  );
+  assert.ok(runDay1.tcs[0].evidence.includes('TC001_fail.png'));
+
+  const runDay2 = parseExecutionReport(
+    [
+      '# Execution Report — Login · run_2026_08_21_0900',
+      '| Trường | Giá trị |',
+      '| --- | --- |',
+      '| Module | Login |',
+      '| Run ID | run_2026_08_21_0900 |',
+      '',
+      '| TC ID | Kịch bản | Kết quả | Ghi chú |',
+      '| --- | --- | --- | --- |',
+      '| LOGIN_TC_001 | Đăng nhập | ✅ PASS | Đã chạy xanh |',
+    ].join('\n'),
+    'run_2026_08_21_0900/execution_report.md'
+  );
+  const trendRows = computeExecutionTrend([runDay2, runDay1]);
+  assert.equal(trendRows.length, 1);
+  assert.equal(trendRows[0].grp, 'FIXEDTREND');
+  assert.equal(trendRows[0].seq[0].run, 'run_2026_08_20_1500');
+  assert.equal(trendRows[0].seq[1].run, 'run_2026_08_21_0900');
+
+  // 7. classifyReqStatus parity with out-of-scope requirement text
+  assert.equal(classifyReqStatus('Ngoài phạm vi'), 'UNIMPLEMENTED');
+  assert.equal(classifyReqStatus('Đã bỏ'), 'DEPRECATED');
+
+  // 8. Direct execution of exportCsv and exportXlsx in scripts/testcases-viewer/src/lib/export.ts
+  const parsedTcFile = parseMarkdownFile(
+    'test_cases_login.md',
+    fs.readFileSync(path.join(REPO_ROOT, 'docs', 'testcases', 'login', 'test_cases_login.md'), 'utf8')
+  );
+  const exportedDownloads = [];
+  const origDoc = globalThis.document;
+  const origCreateObjUrl = URL.createObjectURL;
+  const origRevokeObjUrl = URL.revokeObjectURL;
+  try {
+    URL.createObjectURL = (blob) => {
+      exportedDownloads.push({ size: blob.size, type: blob.type });
+      return 'blob:tc-export';
+    };
+    URL.revokeObjectURL = () => {};
+    globalThis.document = {
+      body: {
+        appendChild() {},
+      },
+      createElement() {
+        return {
+          href: '',
+          download: '',
+          click() {
+            exportedDownloads[exportedDownloads.length - 1].download = this.download;
+          },
+          remove() {},
+        };
+      },
+    };
+    exportCsv(parsedTcFile.testCases.slice(0, 3), 'login_tcs');
+    exportXlsx(parsedTcFile.testCases.slice(0, 3), 'login_tcs');
+    assert.equal(exportedDownloads.length, 2);
+    assert.ok(exportedDownloads[0].download.startsWith('login_tcs_') && exportedDownloads[0].download.endsWith('.csv'));
+    assert.ok(exportedDownloads[0].size > 100);
+    assert.ok(exportedDownloads[1].download.startsWith('login_tcs_') && exportedDownloads[1].download.endsWith('.xlsx'));
+    assert.ok(exportedDownloads[1].size > 500);
+  } finally {
+    globalThis.document = origDoc;
+    URL.createObjectURL = origCreateObjUrl;
+    URL.revokeObjectURL = origRevokeObjUrl;
+  }
+});
+
+test('Seam 19: GFM separator cell validation, code-fence section/table isolation, XLSX status/sheet hardening, CommonMark link pointers, single/multi-range ID continuity, ADF status/date/media/expand, multi-project Xray, and viewer docKey/row highlight', async () => {
+  const {
+    isSeparatorRow,
+    splitSections,
+    extractBoldKV,
+    resolveXlsxStatusStyle,
+    buildSheetXml,
+    safeSheetName,
+  } = await import('./viewer-core.mjs');
+  const { parseEnvContent, adfToMarkdown, markdownToAdf } = await import(
+    './integrations/jira/utils.js'
+  );
+  const { convertPlaywrightToXray, convertJunitXmlToXray } = await import(
+    './integrations/jira/xray_importer.js'
+  );
+
+  // 1. GFM isSeparatorRow cell-level validation
+  assert.equal(isSeparatorRow('| --- | :--- | ---: | :---: |'), true);
+  assert.equal(isSeparatorRow('| -- -- | --- |'), false);
+  assert.equal(isSeparatorRow('| : - : |'), false);
+  assert.equal(isSeparatorRow('| : | - |'), false);
+
+  // 2. splitSections, extractBoldKV, parseMarkdownFile & parseBugFile with nested CommonMark fences
+  const bugWithCodeFenceHeadingAndTable = [
+    '# BUG_login_1787299999_TC001 — Crash on login',
+    '',
+    '## Thông tin chung',
+    '- **Module:** Login',
+    '- **Severity:** 🔴 Critical',
+    '- **Priority:** P1',
+    '- **Trạng thái:** 🔴 Open',
+    '- **Test case liên quan:** CRM_LOGIN_TC_001',
+    '- **REQ ID liên quan:** REQ-LOGIN-01',
+    '- **Build / Version:** v2.0',
+    '- **Ngày phát hiện:** 2026-10-17',
+    '',
+    '## Steps to Reproduce',
+    '1. Run nested markdown snippet:',
+    '````markdown',
+    '```bash',
+    '# [BUG] Hijacked title inside nested fence',
+    '## This bash comment inside code fence must not split Steps to Reproduce!',
+    'echo "step 2"',
+    '```',
+    '## Still inside 4-backtick outer fence!',
+    '````',
+    '2. Observe crash',
+    '',
+    '## Expected Result',
+    'No crash',
+    '',
+    '## Actual Result',
+    'Crash occurred',
+    '',
+    '## Lịch sử retest',
+    '```markdown',
+    '| Ngày | Build | Kết quả | Retest Report | Ghi chú |',
+    '|---|---|---|---|---|',
+    '| 2026-10-18 | v2.0 | FIXED | ghost | Inside fence must be ignored |',
+    '```',
+    '| Ngày | Build | Kết quả | Retest Report | Ghi chú |',
+    '|---|---|---|---|---|',
+    '| 2026-10-19 | v2.1 | NOT_FIXED | retest_report.md | Real retest row |',
+  ].join('\n');
+  const sec = splitSections(bugWithCodeFenceHeadingAndTable);
+  assert.equal(
+    sec['This bash comment inside code fence must not split Steps to Reproduce!'],
+    undefined
+  );
+  assert.equal(sec['Still inside 4-backtick outer fence!'], undefined);
+  const parsedFenceBug = parseBugFile(
+    bugWithCodeFenceHeadingAndTable,
+    'BUG_login_1787299999_TC001.md'
+  );
+  assert.equal(parsedFenceBug.title, 'BUG_login_1787299999_TC001 — Crash on login');
+  assert.ok(parsedFenceBug.steps.includes('2. Observe crash'));
+  assert.equal(parsedFenceBug.retestCount, 1);
+  assert.equal(parsedFenceBug.retest[0].build, 'v2.1');
+
+  const kvNestedFence = extractBoldKV([
+    '- **Snippet:**',
+    '  ````markdown',
+    '  ```json',
+    '  {"a": 1}',
+    '  ```',
+    '  **BoldInsideOuterFence:** must stay inside Snippet',
+    '  ````',
+    '- **After:** clean value',
+  ]);
+  assert.ok(kvNestedFence.Snippet.includes('**BoldInsideOuterFence:** must stay inside Snippet'));
+  assert.equal(kvNestedFence.BoldInsideOuterFence, undefined);
+  assert.equal(kvNestedFence.After, 'clean value');
+
+  const tcFileWithMockFence = [
+    '```bash',
+    '# Fake H1 inside code fence',
+    '```',
+    '# Test Cases — Login Real Title',
+    '',
+    '````markdown',
+    '```markdown',
+    '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+    '| PHANTOM_TC_001 | REQ-LOGIN-01 | Login | High | Fake | — | 1. Fake | — | Fake | High | Yes | E2E | @smoke |',
+    '```',
+    '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+    '| PHANTOM_TC_002 | REQ-LOGIN-01 | Login | High | Still inside 4-backtick fence | — | 1. Fake | — | Fake | High | Yes | E2E | @smoke |',
+    '````',
+    '',
+    '## Nhóm Đăng nhập (1 TC)',
+    '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+    '| CRM_LOGIN_TC_001 | REQ-LOGIN-01 | Login | High | Real TC | — | 1. Login | — | OK | High | Yes | E2E | @smoke |',
+  ].join('\n');
+  const parsedFenceTcFile = parseMarkdownFile('test_cases_login.md', tcFileWithMockFence);
+  assert.equal(parsedFenceTcFile.docTitle, 'Test Cases — Login Real Title');
+  assert.equal(parsedFenceTcFile.testCases.length, 1);
+  assert.equal(parsedFenceTcFile.testCases[0].id, 'CRM_LOGIN_TC_001');
+
+  const execWithMockTableInCodeFence = [
+    '# Báo cáo thực thi — Login',
+    '',
+    '| Trường | Giá trị |',
+    '|---|---|',
+    '| Module | Login |',
+    '| Run ID | run_fence_test |',
+    '',
+    '```markdown',
+    '| TC ID | Test Scenario | Kết quả | Bước fail | Ghi chú |',
+    '|---|---|---|---|---|',
+    '| PHANTOM_TC_999 | Should be ignored | ❌ FAIL | 1 | inside fence |',
+    '```',
+    '',
+    '## Kết quả từng TC',
+    '| TC ID | Test Scenario | Kết quả | Bước fail | Ghi chú |',
+    '|---|---|---|---|---|',
+    '| CRM_LOGIN_TC_001 | Real TC | ✅ PASS | — | ok |',
+  ].join('\n');
+  const parsedFenceExec = parseExecutionReport(execWithMockTableInCodeFence, 'execution_report.md');
+  assert.equal(parsedFenceExec.tcs.length, 1);
+  assert.equal(parsedFenceExec.tcs[0].id, 'CRM_LOGIN_TC_001');
+
+  // 3. resolveXlsxStatusStyle, buildSheetXml, and safeSheetName hardening
+  assert.equal(resolveXlsxStatusStyle('pass'), 3);
+  assert.equal(resolveXlsxStatusStyle('✅ PASS'), 3);
+  assert.equal(resolveXlsxStatusStyle('✅ Đạt'), 3);
+  assert.equal(resolveXlsxStatusStyle('🟢 Đã đóng'), 3);
+  assert.equal(resolveXlsxStatusStyle('❌ FAIL'), 4);
+  assert.equal(resolveXlsxStatusStyle('❌ Chưa đạt'), 4);
+  assert.equal(resolveXlsxStatusStyle('❌ **Không đạt**'), 4);
+  assert.equal(resolveXlsxStatusStyle('**FAIL**'), 4);
+  assert.equal(resolveXlsxStatusStyle('`PASS`'), 3);
+  assert.equal(resolveXlsxStatusStyle('`NOT_FIXED`'), 4);
+  assert.equal(resolveXlsxStatusStyle('🔴 **Critical**'), 4);
+  assert.equal(resolveXlsxStatusStyle('**PASS (100%)**'), 3);
+  assert.equal(resolveXlsxStatusStyle('🔴 Đang mở (PROJ-123)'), 4);
+  assert.equal(resolveXlsxStatusStyle('critical'), 4);
+  assert.equal(resolveXlsxStatusStyle('P0'), 4);
+  assert.equal(resolveXlsxStatusStyle('P1'), 5);
+  assert.equal(resolveXlsxStatusStyle('Major'), 5);
+  assert.equal(resolveXlsxStatusStyle('⚠️ Đạt có điều kiện'), 5);
+  assert.equal(resolveXlsxStatusStyle('🟡 GO CÓ ĐIỀU KIỆN'), 5);
+  assert.equal(resolveXlsxStatusStyle('CONDITIONAL_GO'), 5);
+  assert.equal(resolveXlsxStatusStyle('🟡 Chờ retest'), 5);
+  assert.equal(resolveXlsxStatusStyle('P2'), 6);
+  assert.equal(resolveXlsxStatusStyle('P3'), 6);
+  assert.equal(resolveXlsxStatusStyle('Yes'), 3);
+  assert.equal(resolveXlsxStatusStyle('Có'), 3);
+  assert.equal(resolveXlsxStatusStyle('No'), 6);
+  assert.equal(resolveXlsxStatusStyle('Không'), 6);
+  assert.equal(resolveXlsxStatusStyle('PARTIAL'), 7);
+  assert.equal(resolveXlsxStatusStyle('🟡 Một phần (PARTIAL)'), 7);
+  assert.equal(resolveXlsxStatusStyle('unknown-token'), undefined);
+
+  const sheetXml = buildSheetXml({
+    name: 'Test',
+    head: ['ID', 'Status', 'Priority'],
+    rows: [
+      ['TC_1', '✅ PASS', 'P0'],
+      ['TC_2', '**FAIL**', 'P1'],
+      ['TC_3', '🔴 Đang mở (PROJ-101)', 'Medium'],
+    ],
+    statusCol: 1,
+    statusCols: [1, 2],
+  });
+  assert.match(sheetXml, /<c r="B2" s="3"/);
+  assert.match(sheetXml, /<c r="C2" s="4"/);
+  assert.match(sheetXml, /<c r="B3" s="4"/);
+  assert.match(sheetXml, /<c r="C3" s="5"/);
+  assert.match(sheetXml, /<c r="B4" s="4"/);
+  assert.match(sheetXml, /<c r="C4" s="6"/);
+
+  const takenNames = new Set();
+  assert.equal(safeSheetName("'QuotedSheet'", takenNames), 'QuotedSheet');
+  assert.equal(safeSheetName("  'SpacedQuotedSheet'  ", takenNames), 'SpacedQuotedSheet');
+  assert.equal(safeSheetName('DefaultTakenOmitted'), 'DefaultTakenOmitted');
+  assert.equal(safeSheetName('History', takenNames), 'History_Sheet');
+  assert.equal(safeSheetName('history', takenNames), 'History_Sheet (2)');
+
+  // 4. resolveContextPointers: tilde code fences, nested 4-backtick fences, HTML comments, CommonMark titles & angle brackets
+  const pointerDoc = [
+    'Valid link with title: [Claude Rules](CLAUDE.md "Main Rules")',
+    'Valid angle-bracket link: [Playwright Rules](<.claude/rules/playwright_rules.md#1-mode> "PW")',
+    'Template placeholder ignored: [Module Doc](docs/requirements/<module>/requirements_<module>.md)',
+    '<!-- Broken link inside HTML comment must be ignored: [Ghost](docs/ghost_comment.md) `.claude/rules/ghost_comment.md` -->',
+    '~~~markdown',
+    '[Ghost in tilde fence](docs/ghost_tilde.md)',
+    '`.claude/rules/ghost_tilde.md`',
+    '~~~',
+    '````markdown',
+    '```bash',
+    'echo "inner 3-backtick fence"',
+    '```',
+    '[Ghost after inner 3-backtick fence but inside 4-backtick outer fence](docs/ghost_nested_fence.md)',
+    '````',
+  ].join('\n');
+  const resolvedPtrs = resolveContextPointers(pointerDoc, {
+    sourceFile: path.join(REPO_ROOT, 'README.md'),
+    repoRoot: REPO_ROOT,
+  });
+  assert.equal(resolvedPtrs.brokenPointers.length, 0);
+  assert.equal(resolvedPtrs.pointers.length, 2);
+
+  // 5. Single-ID and multi-range ID continuity validation + knownModule flag + P0/Nghiêm trọng in computeTestSummaryReport
+  assert.equal(computeTraceabilityReport(REPO_ROOT, { module: 'login' }).knownModule, true);
+  assert.equal(computeTraceabilityReport(REPO_ROOT, { module: 'nonexistent_xyz' }).knownModule, false);
+  assert.equal(computeTestSummaryReport(REPO_ROOT, { module: 'login' }).knownModule, true);
+  assert.equal(computeTestSummaryReport(REPO_ROOT, { module: 'nonexistent_xyz' }).knownModule, false);
+
+  const tmpDocsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'validate-range-continuity-'));
+  try {
+    fs.mkdirSync(path.join(tmpDocsRoot, 'docs', 'requirements', 'orders'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDocsRoot, 'docs', 'testcases', 'orders'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDocsRoot, 'docs', 'executions', 'orders', 'run_20260101'), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(tmpDocsRoot, 'docs', 'requirements', 'README.md'),
+      [
+        '# Requirements Catalog',
+        '| Module | Prefix | File | Môi trường | Trạng thái | REQ đã dùng | Mã kế tiếp |',
+        '|---|---|---|---|---|---|---|',
+        '| [Orders](orders/requirements_orders.md) | `ORD` | [requirements_orders.md](orders/requirements_orders.md) | Web | ✅ Done | `REQ-ORD-01` (1) | `REQ-ORD-05` |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tmpDocsRoot, 'docs', 'requirements', 'orders', 'requirements_orders.md'),
+      [
+        '# Requirements — Orders',
+        '| Trường | Giá trị |',
+        '|---|---|',
+        '| Tổng số REQ | 1 |',
+        '| Dải mã đã dùng | `REQ-ORD-01` · `AMB-01` · `RISK-01` |',
+        '| Mã kế tiếp | `REQ-ORD-02` · `AMB-05` · `RISK-06` |',
+        '',
+        '## Danh sách yêu cầu',
+        '| REQ ID | Tiêu đề | Mô tả | Mức ưu tiên | Trạng thái | Nguồn |',
+        '|---|---|---|---|---|---|',
+        '| REQ-ORD-01 | Create order | Desc | High | ✅ Implemented | Spec |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tmpDocsRoot, 'docs', 'testcases', 'README.md'),
+      [
+        '# Test Cases Catalog',
+        '| Module | Prefix TC ID | Dải đã dùng | Mã kế tiếp | Tổng số TC | File |',
+        '|---|---|---|---|---|---|',
+        '| [Orders](orders/test_cases_orders.md) | `CRM_ORD_TC_` | `CRM_ORD_TC_001` (1) | `CRM_ORD_TC_004` | 1 | [test_cases_orders.md](orders/test_cases_orders.md) |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tmpDocsRoot, 'docs', 'testcases', 'orders', 'test_cases_orders.md'),
+      [
+        '# Test Cases — Orders',
+        '| Trường | Giá trị |',
+        '|---|---|',
+        '| Tổng số TC | 1 |',
+        '| Dải TC ID | `CRM_ORD_TC_001` (1) |',
+        '| Mã kế tiếp | `CRM_ORD_TC_003` |',
+        '',
+        '## Nhóm Order (1 TC)',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_ORD_TC_001 | REQ-ORD-01 | Orders | Nghiêm trọng | Create order | Logged in | 1. Click | Valid | Created | P0 | Có | E2E | @smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(tmpDocsRoot, 'docs', 'executions', 'orders', 'run_20260101', 'execution_report.md'),
+      [
+        '# Execution Report — Orders',
+        '| TC ID | Kịch bản | Kết quả | Evidence | Ghi chú |',
+        '|---|---|---|---|---|',
+        '| CRM_ORD_TC_001 | Create order | PASS | — | OK |',
+      ].join('\n'),
+      'utf8'
+    );
+    const rangeValidation = validateDocsTree(tmpDocsRoot);
+    assert.equal(rangeValidation.valid, false);
+    assert.ok(
+      rangeValidation.schemaViolations.some((v) =>
+        v.message.includes('Module Catalog ID range discontinuity for "[Orders]')
+      )
+    );
+    assert.ok(
+      rangeValidation.schemaViolations.some((v) =>
+        v.message.includes('Requirements metadata AMB ID range discontinuity: max used is 1')
+      )
+    );
+    assert.ok(
+      rangeValidation.schemaViolations.some((v) =>
+        v.message.includes('Requirements metadata RISK ID range discontinuity: max used is 1')
+      )
+    );
+    assert.ok(
+      rangeValidation.schemaViolations.some((v) =>
+        v.message.includes('Test Cases Catalog ID range discontinuity')
+      )
+    );
+    assert.ok(
+      rangeValidation.schemaViolations.some((v) =>
+        v.message.includes('Test Cases metadata ID range discontinuity')
+      )
+    );
+    const ordSummary = computeTestSummaryReport(tmpDocsRoot, { module: 'orders' });
+    assert.equal(ordSummary.execution.highPriorityPassRate, 100);
+    assert.equal(ordSummary.coverage.criticalReqsTotal, 1);
+    assert.equal(ordSummary.coverage.criticalReqsPassed, 1);
+  } finally {
+    fs.rmSync(tmpDocsRoot, { recursive: true, force: true });
+  }
+
+  // 6. Jira & Xray: quoted .env unescaping, ADF status/date/media/expand + 4-backtick codeBlock, multi-project Playwright & JUnit single-pass entities + indented CDATA
+  const parsedEnv = parseEnvContent(
+    [
+      'DOUBLE_Q="Line 1\\nLine 2 \\"quoted\\" \\\\slash\\tEnd"',
+      "SINGLE_Q='It\\'s a \\\\test'",
+    ].join('\n')
+  );
+  assert.equal(parsedEnv.DOUBLE_Q, 'Line 1\nLine 2 "quoted" \\slash\tEnd');
+  assert.equal(parsedEnv.SINGLE_Q, "It's a \\test");
+
+  const adfFrom4Backtick = markdownToAdf(
+    ['````markdown', '```json', '{"nested": true}', '```', '````'].join('\n')
+  );
+  assert.equal(adfFrom4Backtick.content.length, 1);
+  assert.equal(adfFrom4Backtick.content[0].type, 'codeBlock');
+  assert.ok(adfFrom4Backtick.content[0].content[0].text.includes('{"nested": true}'));
+
+  const richAdf = {
+    type: 'doc',
+    version: 1,
+    content: [
+      {
+        type: 'paragraph',
+        content: [
+          { type: 'status', attrs: { text: 'IN PROGRESS', color: 'blue' } },
+          { type: 'text', text: ' Due: ' },
+          { type: 'date', attrs: { timestamp: '1704067200000' } },
+        ],
+      },
+      {
+        type: 'expand',
+        attrs: { title: 'Diagnostic Logs' },
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Stack trace line' }] }],
+      },
+      {
+        type: 'mediaSingle',
+        content: [
+          {
+            type: 'media',
+            attrs: { id: 'att-123', alt: 'login_error.png', url: 'https://jira.example.com/att-123.png' },
+          },
+        ],
+      },
+    ],
+  };
+  const renderedAdf = adfToMarkdown(richAdf);
+  assert.match(renderedAdf, /\[IN PROGRESS\] Due: 2024-01-01/);
+  assert.match(renderedAdf, /\*\*Diagnostic Logs\*\*\nStack trace line/);
+  assert.match(renderedAdf, /!\[login_error\.png\]\(https:\/\/jira\.example\.com\/att-123\.png\)/);
+
+  const multiProjectPw = convertPlaywrightToXray(
+    {
+      suites: [
+        {
+          specs: [
+            {
+              title: 'Cross-browser checkout test',
+              annotations: [{ type: 'test_key', description: 'PROJ-777' }],
+              tests: [
+                {
+                  projectName: 'chromium',
+                  results: [{ status: 'passed' }],
+                },
+                {
+                  projectName: 'firefox',
+                  results: [
+                    {
+                      status: 'failed',
+                      errors: [{ message: 'Firefox button detached' }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    { projectKey: 'PROJ', platform: 'cloud' }
+  );
+  assert.equal(multiProjectPw.payload.tests.length, 1);
+  assert.equal(multiProjectPw.payload.tests[0].testKey, 'PROJ-777');
+  assert.equal(multiProjectPw.payload.tests[0].status, 'FAILED');
+  assert.match(multiProjectPw.payload.tests[0].comment, /Firefox button detached/);
+
+  const junitNumericAndSkip = convertJunitXmlToXray(
+    [
+      '<testsuite>',
+      '  <testcase name="[PROJ-801] Check &#39;quote&#39; &amp; &#x3C;tag&#x3E; &amp;lt;literal&amp;gt; &#38;lt;escaped&#38;gt;">',
+      '    <skipped message="Blocked by &#39;SSO&#39; maintenance"/>',
+      '  </testcase>',
+      '  <testcase classname="com.example.PROJ-802_AuthSpec" name="should handle indented CDATA">',
+      '    <failure message="Assertion failed">',
+      '      <![CDATA[Expected status 200 &amp; ok, got 500]]>',
+      '    </failure>',
+      '  </testcase>',
+      '</testsuite>',
+    ].join('\n'),
+    { projectKey: 'PROJ', platform: 'cloud' }
+  );
+  assert.equal(junitNumericAndSkip.payload.tests.length, 2);
+  assert.equal(junitNumericAndSkip.payload.tests[0].testKey, 'PROJ-801');
+  assert.equal(junitNumericAndSkip.payload.tests[0].status, 'TODO');
+  assert.equal(
+    junitNumericAndSkip.payload.tests[0].comment,
+    "Skipped: Blocked by 'SSO' maintenance"
+  );
+  assert.equal(junitNumericAndSkip.payload.tests[1].testKey, 'PROJ-802');
+  assert.equal(junitNumericAndSkip.payload.tests[1].status, 'FAILED');
+  assert.equal(
+    junitNumericAndSkip.payload.tests[1].comment,
+    'Failure: Assertion failed — Expected status 200 &amp; ok, got 500'
+  );
+
+  // 7. Standalone Viewers: execution-viewer docKey & SORT_VALUE.run, bugs-viewer row .sel, testcases-viewer bundle sync & runtime export execution, P0-P4/VI priority filtering & stats
+  const execBundleSrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'execution-viewer', 'bundle.html'),
+    'utf8'
+  );
+  assert.match(execBundleSrc, /function docKey\(d\)\{\s*return `\$\{d\.fileName\}\|\$\{d\.module\|\|''\}\|\$\{d\.runId\}`;\s*\}/);
+  assert.match(execBundleSrc, /run:\s*t\s*=>\s*t\.runId\s*\|\|\s*''/);
+
+  const bugsBundleSrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'bugs-viewer', 'bundle.html'),
+    'utf8'
+  );
+  assert.match(bugsBundleSrc, /tr\.classList\.add\('sel'\)/);
+
+  const tcBundleSrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'bundle.html'),
+    'utf8'
+  );
+  assert.ok(
+    tcBundleSrc.includes('/* __VIEWER_CORE_START__ */') &&
+      tcBundleSrc.includes('/* __VIEWER_CORE_END__ */')
+  );
+  assert.match(tcBundleSrc, /parseMarkdownFile\(e\.name,e\.content\)/);
+  assert.match(tcBundleSrc, /queryTestCases\(U,/);
+  assert.match(tcBundleSrc, /buildCsvString\(e\)/);
+  assert.match(tcBundleSrc, /buildXlsxBytes\(e\)/);
+
+  // Execute the synchronized viewer-core script + export call expressions extracted from testcases-viewer/bundle.html in-process
+  const coreScriptMatch = tcBundleSrc.match(
+    /\/\* __VIEWER_CORE_START__ \*\/([\s\S]*?)\/\* __VIEWER_CORE_END__ \*\//
+  );
+  const csvCallMatch = tcBundleSrc.match(/new Blob\(\[(buildCsvString\([^)]+\))\]/);
+  const xlsxCallMatch = tcBundleSrc.match(/new Blob\(\[(buildXlsxBytes\([^)]+\))\]/);
+  assert.ok(coreScriptMatch && csvCallMatch && xlsxCallMatch);
+  const vmSandbox = { TextEncoder, Uint8Array, Uint32Array, ArrayBuffer, DataView, Set, Map };
+  vm.createContext(vmSandbox);
+  vm.runInContext(
+    `${coreScriptMatch[1]}\n` +
+      `const parsed = parseMarkdownFile('tc.md', '# TCs\\n| TC ID | Risk Level | Test Scenario | Priority | Automatable |\\n|---|---|---|---|---|\\n| TC_01 | Cao | Login | P1 | Có |');\n` +
+      `const q = queryTestCases([parsed], { priorities: ['high'], automatable: 'yes' });\n` +
+      `const e = buildTestCasesExportPlan(q.filtered, q.exportBaseName);\n` +
+      `globalThis.csvOut = ${csvCallMatch[1]};\n` +
+      `globalThis.xlsxOut = ${xlsxCallMatch[1]};\n` +
+      `globalThis.qStats = q.stats;\n` +
+      `globalThis.qCount = q.filtered.length;\n`,
+    vmSandbox
+  );
+  assert.equal(vmSandbox.qCount, 1);
+  assert.equal(vmSandbox.qStats.high, 1);
+  assert.match(vmSandbox.csvOut, /"TC_01"/);
+  assert.equal(vmSandbox.xlsxOut[0], 0x50);
+  assert.equal(vmSandbox.xlsxOut[1], 0x4b);
+
+  const parsedPrioFile = parseMarkdownFile(
+    'test_cases_prio.md',
+    [
+      '# Test Cases — Prio',
+      '| TC ID | Risk Level | Test Scenario | Priority | Automatable |',
+      '| --- | --- | --- | --- | --- |',
+      '| TC-PRIO-01 | Thấp | Low P4 | P4 | Không |',
+      '| TC-PRIO-02 | Nghiêm trọng | Critical VI | Nghiêm trọng | Có |',
+      '| TC-PRIO-03 | Trung bình | Medium P2 | P2 | Yes |',
+      '| TC-PRIO-04 | Cao | High VI | Cao | Có |',
+      '| TC-PRIO-05 | Thấp | Low VI | Thấp | No |',
+      '| TC-PRIO-06 | Critical | Critical P0 | P0 | Yes |',
+      '| TC-PRIO-07 | High | High P1 | P1 | Partial |',
+    ].join('\n')
+  );
+  const prioritySorted = queryTestCases([parsedPrioFile], {
+    sort: { key: 'priority', dir: 1 },
+  });
+  assert.deepEqual(
+    prioritySorted.filtered.map((tc) => tc.id),
+    [
+      'TC-PRIO-02',
+      'TC-PRIO-06',
+      'TC-PRIO-04',
+      'TC-PRIO-07',
+      'TC-PRIO-03',
+      'TC-PRIO-05',
+      'TC-PRIO-01',
+    ]
+  );
+  assert.deepEqual(prioritySorted.stats, {
+    critical: 2,
+    high: 2,
+    medium: 1,
+    low: 2,
+  });
+  assert.deepEqual(
+    queryTestCases([parsedPrioFile], { priorities: ['high'] }).filtered.map((tc) => tc.id),
+    ['TC-PRIO-04', 'TC-PRIO-07']
+  );
+  assert.deepEqual(
+    queryTestCases([parsedPrioFile], { priorities: ['critical'] }).filtered.map((tc) => tc.id),
+    ['TC-PRIO-02', 'TC-PRIO-06']
+  );
+  assert.deepEqual(
+    queryTestCases([parsedPrioFile], { priorities: ['low'] }).filtered.map((tc) => tc.id),
+    ['TC-PRIO-01', 'TC-PRIO-05']
+  );
+  assert.deepEqual(
+    queryTestCases([parsedPrioFile], { automatable: 'yes' }).filtered.map((tc) => tc.id),
+    ['TC-PRIO-02', 'TC-PRIO-03', 'TC-PRIO-04', 'TC-PRIO-06']
+  );
+  assert.deepEqual(
+    queryTestCases([parsedPrioFile], { automatable: 'no' }).filtered.map((tc) => tc.id),
+    ['TC-PRIO-01', 'TC-PRIO-05']
+  );
+  assert.equal(resolveXlsxStatusStyle('P4'), 6);
+});
 

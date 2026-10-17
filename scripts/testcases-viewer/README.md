@@ -104,7 +104,7 @@ pnpm run bundle
 | `src/lib/export.ts` | TypeScript wrapper gọi `buildTestCasesExportPlan`, `buildCsvString`, `buildXlsxBytes` từ `scripts/viewer-core.mjs` |
 | `src/lib/assets.ts` | **File sinh tự động** — logo + favicon dạng data URI. Không sửa tay |
 | `tools/embed-assets.mjs` | Script sinh `assets.ts` và chèn favicon vào `index.html` |
-| `bundle.html` | Bản build 1 file — commit vào repo để dùng ngay không cần build |
+| `bundle.html` | Bản build 1 file — commit vào repo để dùng ngay không cần build. Khối nhân `/* __VIEWER_CORE_START__ */ ... /* __VIEWER_CORE_END__ */` được đồng bộ tự động từ [`../viewer-core.mjs`](../viewer-core.mjs) qua `npm run sync` (`node scripts/sync-antigravity.mjs`) |
 
 ### Đổi logo / favicon
 
