@@ -86,6 +86,10 @@ _Avoid_: Updated test sheet
 The bidirectional mapping across Requirements (`REQ ID`), Manual Test Cases (`TC ID`), Automated Test Scripts, Execution Reports, and Bug Reports.
 _Avoid_: Coverage table
 
+**Chronological Execution Overlay**:
+The chronological reconciliation of test case outcomes across a module's initial execution reports (`run_*`) and subsequent retest reports (`retest_*`), mapping bug verification statuses (`FIXED`, `NOT_FIXED`, `PARTIAL`, `CANNOT_VERIFY`) and regression test results onto their corresponding `TC ID`s to reflect the latest verified state.
+_Avoid_: Last-run snapshot, manual status merge
+
 **Test Summary Report**:
 The milestone-level release readiness artifact that aggregates execution runs across modules, open bug severities, **Traceability Matrix** coverage, and seven ISO/IEC/IEEE 29119-3 exit criteria into an evidence-backed `GO`, `CONDITIONAL_GO`, or `NO_GO` recommendation.
 _Avoid_: Release notes, sprint recap

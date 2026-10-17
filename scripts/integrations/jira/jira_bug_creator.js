@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseBugFile } from '../../viewer-core.mjs';
+import { extractPrimaryIds, parseBugFile } from '../../viewer-core.mjs';
 import {
   buildJiraAuthHeaders,
   jiraRequest,
@@ -32,9 +32,10 @@ const TC_ID_RE = /\b[A-Z0-9_]+_TC_\d+(?:-[a-z0-9]+)?\b/g;
 
 function mapJiraPriorityName(priorityRaw, severityKey) {
   const p = String(priorityRaw || '').trim().toUpperCase();
-  if (p.startsWith('P1') || severityKey === 'critical') return 'Highest';
-  if (p.startsWith('P2') || severityKey === 'major') return 'High';
-  if (p.startsWith('P3') || severityKey === 'minor') return 'Medium';
+  const s = String(severityKey || '').trim().toLowerCase();
+  if (p.startsWith('P1') || s === 'critical') return 'Highest';
+  if (p.startsWith('P2') || s === 'major') return 'High';
+  if (p.startsWith('P3') || s === 'minor') return 'Medium';
   return 'Low';
 }
 
@@ -97,8 +98,8 @@ export function buildJiraBugPayload(parsedBug, arg2 = {}, arg3 = {}) {
   const cleanTitle = String(parsedBug.title || 'Untitled Bug').replace(/^\[BUG\]\s*/i, '').trim();
   const summary = `${summaryPrefix}${cleanTitle}`.slice(0, 250);
 
-  const tcLabels = [...String(parsedBug.tc || '').matchAll(TC_ID_RE)].map((m) => m[0]);
-  const reqLabels = [...String(parsedBug.req || '').matchAll(REQ_ID_RE)].map((m) => m[0]);
+  const tcLabels = extractPrimaryIds(parsedBug.tc, TC_ID_RE);
+  const reqLabels = extractPrimaryIds(parsedBug.req, REQ_ID_RE);
   const labels = [
     ...new Set([
       ...(parsedBug.id ? [parsedBug.id] : []),
@@ -206,22 +207,38 @@ export async function uploadJiraAttachment(
 }
 
 /**
- * Parses a local `BUG_*.md` report string into a structured bug object.
+ * Parses a local `BUG_*.md` report string into a structured bug object
+ * with primary `TC ID` and `REQ ID` references stripped of parenthetical historical notes.
  */
 export function parseBugMarkdown(rawMarkdown, fileName = 'BUG_unknown_0.md') {
-  return parseBugFile(rawMarkdown, fileName);
+  const parsed = parseBugFile(rawMarkdown, fileName);
+  const primaryTcs = extractPrimaryIds(parsed.tc, TC_ID_RE);
+  const primaryReqs = extractPrimaryIds(parsed.req, REQ_ID_RE);
+  return {
+    ...parsed,
+    tcRaw: parsed.tc,
+    reqRaw: parsed.req,
+    tc: primaryTcs.length > 0 ? primaryTcs.join(', ') : parsed.tc,
+    req: primaryReqs.length > 0 ? primaryReqs.join(', ') : parsed.req,
+  };
+}
+
+function escapeRegExp(str) {
+  return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
  * Inserts or updates `- **Jira Issue:** <KEY>` inside a local `BUG_*.md` file.
  */
 export function updateBugMarkdownWithJiraKey(filePath, issueKey) {
+  if (!filePath || !issueKey || !fs.existsSync(filePath)) return false;
   const raw = fs.readFileSync(filePath, 'utf8');
-  if (raw.includes(issueKey)) return false;
+  const issueKeyRe = new RegExp(`\\b${escapeRegExp(issueKey)}\\b`);
 
   const lines = raw.split(/\r?\n/);
   const jiraLineIdx = lines.findIndex((l) => /^\s*-\s*\*\*Jira (?:Issue|Key):\*\*/i.test(l));
   if (jiraLineIdx !== -1) {
+    if (issueKeyRe.test(lines[jiraLineIdx])) return false;
     lines[jiraLineIdx] = `- **Jira Issue:** ${issueKey}`;
     fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
     return true;
@@ -247,27 +264,37 @@ export function updateBugMarkdownWithJiraKey(filePath, issueKey) {
  * Appends `(<KEY>)` inside the `Trạng thái` cell of `docs/bugs/README.md` while preserving its 8-column table schema.
  */
 export function updateBugsCatalogWithJiraKey(bugsReadmePath, bugId, issueKey) {
-  if (!bugId || !bugsReadmePath || !fs.existsSync(bugsReadmePath)) return false;
+  if (!bugId || !issueKey || !bugsReadmePath || !fs.existsSync(bugsReadmePath)) return false;
   const readmeRaw = fs.readFileSync(bugsReadmePath, 'utf8');
-  if (!readmeRaw.includes(bugId) || readmeRaw.includes(issueKey)) return false;
+  const bugIdRe = new RegExp(`\\b${escapeRegExp(bugId)}\\b`);
+  const issueKeyRe = new RegExp(`\\b${escapeRegExp(issueKey)}\\b`);
+  if (!bugIdRe.test(readmeRaw)) return false;
 
+  let changed = false;
   const updatedReadme = readmeRaw
     .split(/\r?\n/)
     .map((line) => {
-      if (!line.includes(bugId)) return line;
+      if (!bugIdRe.test(line)) return line;
       const trimmed = line.trim();
       if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
         const innerCells = trimmed
           .slice(1, -1)
-          .split('|')
+          .split(/(?<!\\)\|/)
           .map((c) => c.trim());
+        if (!bugIdRe.test(innerCells[0] || '')) return line;
         const stIdx = innerCells.length >= 6 ? 5 : innerCells.length - 1;
-        innerCells[stIdx] = `${innerCells[stIdx]} (${issueKey})`;
+        if (issueKeyRe.test(innerCells[stIdx] || '')) return line;
+        const baseSt = innerCells[stIdx].replace(/\s*\([A-Z][A-Z0-9_]+-\d+\)\s*$/, '').trim();
+        innerCells[stIdx] = `${baseSt} (${issueKey})`;
+        changed = true;
         return `| ${innerCells.join(' | ')} |`;
       }
+      if (issueKeyRe.test(line)) return line;
+      changed = true;
       return `${line} (${issueKey})`;
     })
     .join('\n');
+  if (!changed) return false;
   fs.writeFileSync(bugsReadmePath, updatedReadme, 'utf8');
   return true;
 }

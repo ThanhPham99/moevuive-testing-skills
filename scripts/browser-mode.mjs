@@ -210,11 +210,20 @@ function parseArgs(argv) {
   let command = 'status';
   let rootDir = path.resolve(__dirname, '..');
   let videoOption = null;
+  let help = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--root' && argv[i + 1]) {
+    if (arg === '--help' || arg === '-h') {
+      help = true;
+    } else if (arg === '--root' && argv[i + 1]) {
       rootDir = path.resolve(argv[++i]);
+    } else if (arg.startsWith('--root=')) {
+      rootDir = path.resolve(arg.slice('--root='.length));
+    } else if (arg === '--video' && argv[i + 1]) {
+      const val = argv[++i].toLowerCase();
+      if (val === 'on' || val === 'true') videoOption = true;
+      else if (val === 'off' || val === 'false') videoOption = false;
     } else if (arg.startsWith('--video=')) {
       const val = arg.slice('--video='.length).toLowerCase();
       if (val === 'on' || val === 'true') videoOption = true;
@@ -223,11 +232,15 @@ function parseArgs(argv) {
       command = arg.toLowerCase();
     }
   }
-  return { command, rootDir, videoOption };
+  return { command, rootDir, videoOption, help };
 }
 
 function main() {
-  const { command, rootDir, videoOption } = parseArgs(process.argv.slice(2));
+  const { command, rootDir, videoOption, help } = parseArgs(process.argv.slice(2));
+  if (help) {
+    console.log('Usage: node scripts/browser-mode.mjs <status|headless|headed> [--video=on|off] [--root <dir>]');
+    return;
+  }
   const current = detectBrowserModeStatus(rootDir);
 
   if (command === 'status' && videoOption === null) {

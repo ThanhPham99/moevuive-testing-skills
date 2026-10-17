@@ -30,16 +30,21 @@ const INLINE_REPO_PATH_REGEX =
 function parseArgs(argv) {
   let checkOnly = false;
   let rootDir = path.resolve(__dirname, '..');
+  let help = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--check') {
+    if (arg === '--help' || arg === '-h') {
+      help = true;
+    } else if (arg === '--check') {
       checkOnly = true;
     } else if (arg === '--root' && argv[i + 1]) {
       rootDir = path.resolve(argv[++i]);
+    } else if (arg.startsWith('--root=')) {
+      rootDir = path.resolve(arg.slice('--root='.length));
     }
   }
-  return { checkOnly, rootDir };
+  return { checkOnly, rootDir, help };
 }
 
 /**
@@ -427,7 +432,11 @@ export function syncAntigravity(rootDir, { checkOnly = false } = {}) {
 }
 
 function main() {
-  const { checkOnly, rootDir } = parseArgs(process.argv.slice(2));
+  const { checkOnly, rootDir, help } = parseArgs(process.argv.slice(2));
+  if (help) {
+    console.log('Usage: node scripts/sync-antigravity.mjs [--check] [--root <dir>]');
+    return;
+  }
   const result = syncAntigravity(rootDir, { checkOnly });
 
   if (checkOnly) {

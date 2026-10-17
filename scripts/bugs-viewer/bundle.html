@@ -1059,7 +1059,7 @@ const GRP_LABEL = {
   TOBLOCKED: '⚠️ Chuyển sang BLOCKED',
 };
 
-const TCID_RE = /\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_TC_\d+|TC_[A-Z0-9_]+)\b/;
+const TCID_RE = /\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_TC_\d+(?:-[a-z0-9]+)?|TC_[A-Z0-9_]+(?:-[a-z0-9]+)?)\b/i;
 
 function isKVTable(t) {
   return (
@@ -1536,8 +1536,16 @@ function parseExecutionReport(text, fileName) {
     if (!isKVTable(t) || !t.heading) continue;
     const m = t.heading.match(TCID_RE);
     if (!m) continue;
+    const rawMatchedId = m[1];
+    const baseMatchedId = rawMatchedId.replace(/-[a-z0-9]+$/i, '');
+    const resolvedId = byId[rawMatchedId]
+      ? rawMatchedId
+      : byId[baseMatchedId]
+        ? baseMatchedId
+        : Object.keys(byId).find((k) => k.replace(/-[a-z0-9]+$/i, '') === baseMatchedId) ||
+          rawMatchedId;
     const kv = kvOfTable(t);
-    add(m[1], {
+    add(resolvedId, {
       scenario: (t.heading.split('·')[1] || '').trim(),
       reqId: kv['REQ ID'] || '',
       priority: kv['Priority'] || '',
@@ -1600,10 +1608,61 @@ function parseExecutionReport(text, fileName) {
   };
 }
 
+function extractPrimaryIds(rawText, regex) {
+  const str = String(rawText || '');
+  const withoutParens = str.replace(/\([^)]*\)/g, ' ');
+  const primaryMatches = [...withoutParens.matchAll(regex)].map((m) => m[0]);
+  if (primaryMatches.length > 0) return [...new Set(primaryMatches)];
+  return [...new Set([...str.matchAll(regex)].map((m) => m[0]))];
+}
+
+function mapRetestBugStatusToTcStatus(bugStatus) {
+  const s = String(bugStatus || '').toUpperCase();
+  if (s === 'FIXED' || s === 'PASS') return 'PASS';
+  if (s === 'NOT_FIXED' || s === 'PARTIAL' || s === 'FAIL') return 'FAIL';
+  if (s === 'CANNOT_VERIFY' || s === 'BLOCKED') return 'BLOCKED';
+  return '';
+}
+
+const TC_STATUS_SEVERITY = { FAIL: 3, BLOCKED: 2, PASS: 1, SKIPPED: 0 };
+
+function extractDocTcStatusMap(d) {
+  const map = new Map();
+  for (const t of d?.tcs || []) {
+    const st = String(t.status || '').toUpperCase();
+    const baseId = String(t.id || '').trim().replace(/-[a-z0-9]+$/i, '');
+    if (baseId && st) {
+      const prev = map.get(baseId);
+      if (!prev || (TC_STATUS_SEVERITY[st] ?? 0) > (TC_STATUS_SEVERITY[prev] ?? 0)) {
+        map.set(baseId, st);
+      }
+    }
+  }
+  const bugTcMap = new Map();
+  for (const b of d?.bugs || []) {
+    const mappedSt = mapRetestBugStatusToTcStatus(b.status);
+    if (!mappedSt) continue;
+    for (const rawTcId of extractPrimaryIds(
+      b.tcReq,
+      /\b(?:[A-Z0-9]+_)*TC_\d+(?:-[a-z0-9]+)?\b/gi
+    )) {
+      const tcId = rawTcId.replace(/-[a-z0-9]+$/i, '');
+      const prev = bugTcMap.get(tcId);
+      if (!prev || (TC_STATUS_SEVERITY[mappedSt] ?? 0) > (TC_STATUS_SEVERITY[prev] ?? 0)) {
+        bugTcMap.set(tcId, mappedSt);
+      }
+    }
+  }
+  for (const [tcId, mappedSt] of bugTcMap.entries()) {
+    if (!map.has(tcId)) map.set(tcId, mappedSt);
+  }
+  return map;
+}
+
 function computeExecutionTrend(docs) {
   const runNum = (r) => {
-    const m = String(r).match(/(\d{6,})/);
-    return m ? +m[1] : 0;
+    const matches = [...String(r || '').matchAll(/(\d+)/g)];
+    return matches.length ? Number(matches[matches.length - 1][1]) : 0;
   };
   const out = [];
   const byMod = {};
@@ -1612,13 +1671,18 @@ function computeExecutionTrend(docs) {
   }
   for (const [mod, modDocs] of Object.entries(byMod)) {
     if (modDocs.length < 2) continue;
-    const ordered = [...modDocs].sort((a, b) => runNum(a.runId) - runNum(b.runId));
-    const ids = new Set(ordered.flatMap((d) => d.tcs.map((t) => t.id)));
+    const ordered = [...modDocs].sort(
+      (a, b) =>
+        runNum(a.runId) - runNum(b.runId) ||
+        (a.isRetest ? 1 : 0) - (b.isRetest ? 1 : 0)
+    );
+    const docMaps = ordered.map((d) => ({ run: d.runId, map: extractDocTcStatusMap(d) }));
+    const ids = new Set(docMaps.flatMap((dm) => [...dm.map.keys()]));
     for (const id of ids) {
-      const seq = ordered
-        .map((d) => ({
-          run: d.runId,
-          st: (d.tcs.find((t) => t.id === id) || {}).status || '',
+      const seq = docMaps
+        .map((dm) => ({
+          run: dm.run,
+          st: dm.map.get(id) || '',
         }))
         .filter((x) => x.st);
       if (seq.length < 2) continue;

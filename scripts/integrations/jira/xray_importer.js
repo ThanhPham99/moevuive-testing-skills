@@ -89,6 +89,31 @@ function buildXrayExecutionResult(
   };
 }
 
+const XRAY_STATUS_RANK = {
+  FAILED: 3,
+  FAIL: 3,
+  PASSED: 2,
+  PASS: 2,
+  TODO: 1,
+};
+
+function upsertTestResult(testsByKey, testKey, status, comment) {
+  const prev = testsByKey.get(testKey);
+  if (!prev) {
+    testsByKey.set(testKey, { testKey, status, comment });
+    return;
+  }
+  const prevRank = XRAY_STATUS_RANK[prev.status] || 0;
+  const nextRank = XRAY_STATUS_RANK[status] || 0;
+  if (nextRank >= prevRank) {
+    testsByKey.set(testKey, {
+      testKey,
+      status,
+      comment: nextRank > prevRank || comment.startsWith('Failure:') ? comment : prev.comment,
+    });
+  }
+}
+
 /**
  * Converts a Playwright JSON report object into an Xray JSON execution payload.
  */
@@ -116,11 +141,12 @@ export function convertPlaywrightToXray(
         }
 
         const xrayStatus = mapStatusToXray(rawStatus, platform);
-        testsByKey.set(testKey, {
+        upsertTestResult(
+          testsByKey,
           testKey,
-          status: xrayStatus,
-          comment: errorMsg ? `Failure: ${errorMsg}` : `Executed: ${title}`,
-        });
+          xrayStatus,
+          errorMsg ? `Failure: ${errorMsg}` : `Executed: ${title}`
+        );
       }
       if (Array.isArray(suite.suites)) {
         walkSuites(suite.suites);
@@ -176,11 +202,7 @@ export function convertJunitXmlToXray(
       continue;
     }
 
-    testsByKey.set(testKey, {
-      testKey,
-      status: mapStatusToXray(rawStatus, platform),
-      comment,
-    });
+    upsertTestResult(testsByKey, testKey, mapStatusToXray(rawStatus, platform), comment);
   }
 
   return buildXrayExecutionResult(testsByKey, unmappedTests, 'JUnit', {

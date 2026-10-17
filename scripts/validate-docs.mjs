@@ -20,7 +20,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveContextPointers } from './sync-antigravity.mjs';
 import {
+  colIdx,
+  extractDocTcStatusMap,
+  extractPrimaryIds,
   formatCellPlainText,
+  normStatus,
   parseBugFile,
   parseBugIndex,
   parseExecutionReport,
@@ -70,7 +74,13 @@ export function normalizeTcId(rawTcId) {
     .replace(/-[a-z0-9]+$/i, '');
 }
 
-function extractReqDefinitionsFromMarkdown(content, sourceRelPath, outMap, outOfScopeSet) {
+function extractReqDefinitionsFromMarkdown(
+  content,
+  sourceRelPath,
+  outMap,
+  outOfScopeSet,
+  duplicateReqs = []
+) {
   const tables = parseMarkdownTables(content);
 
   // Check explicit "REQ cố ý KHÔNG có TC" tables where column 0 is REQ ID
@@ -104,6 +114,13 @@ function extractReqDefinitionsFromMarkdown(content, sourceRelPath, outMap, outOf
         if (status.includes('⚪') || status.includes('🔴') || status.toLowerCase().includes('deprecated')) {
           outOfScopeSet.add(reqId);
         }
+        if (outMap.has(reqId)) {
+          duplicateReqs.push({
+            id: reqId,
+            file: sourceRelPath,
+            firstFile: outMap.get(reqId).sourceFile,
+          });
+        }
         outMap.set(reqId, {
           id: reqId,
           title,
@@ -130,8 +147,10 @@ function collectModuleArtifacts(repoRoot) {
         execFiles: [],
         bugFiles: [],
         reqs: new Map(),
+        duplicateReqs: [],
         outOfScopeReqs: new Set(),
         tcs: new Map(),
+        duplicateTcs: [],
         tcList: [],
         executedTcs: new Set(),
         openBugs: [],
@@ -160,24 +179,31 @@ function collectModuleArtifacts(repoRoot) {
     }
   }
 
+  function collectIndexAndNestedMd(modDir, indexFileName, targetList) {
+    const indexFile = path.join(modDir, indexFileName);
+    if (fs.existsSync(indexFile)) targetList.push(indexFile);
+    for (const entry of fs.readdirSync(modDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'impact' || entry.name === 'archive') continue;
+      targetList.push(...walkFiles(path.join(modDir, entry.name), (f) => f.endsWith('.md')));
+    }
+  }
+
   // 1. Scan requirements + impact reports
   walkBranchModules(path.join(docsDir, 'requirements'), (mod, modDir, leafName) => {
-    const indexFile = path.join(modDir, `requirements_${leafName}.md`);
-    if (fs.existsSync(indexFile)) mod.reqFiles.push(indexFile);
-    const storiesDir = path.join(modDir, 'stories');
-    if (fs.existsSync(storiesDir)) {
-      mod.reqFiles.push(...walkFiles(storiesDir, (f) => f.endsWith('.md')));
-    }
+    collectIndexAndNestedMd(modDir, `requirements_${leafName}.md`, mod.reqFiles);
     const impactDir = path.join(modDir, 'impact');
     if (fs.existsSync(impactDir)) {
       mod.impactFiles.push(...walkFiles(impactDir, (f) => f.endsWith('.md')));
     }
   });
 
-  // 2. Scan testcases
+  // 2. Scan testcases (index + nested subdirs + impact/*.md)
   walkBranchModules(path.join(docsDir, 'testcases'), (mod, modDir, leafName) => {
-    const tcFile = path.join(modDir, `test_cases_${leafName}.md`);
-    if (fs.existsSync(tcFile)) mod.tcFiles.push(tcFile);
+    collectIndexAndNestedMd(modDir, `test_cases_${leafName}.md`, mod.tcFiles);
+    const impactDir = path.join(modDir, 'impact');
+    if (fs.existsSync(impactDir)) {
+      mod.impactFiles.push(...walkFiles(impactDir, (f) => f.endsWith('.md')));
+    }
   });
 
   // 3. Scan executions
@@ -197,10 +223,9 @@ function collectModuleArtifacts(repoRoot) {
     );
   });
 
-  // 5. Scan user-guides
+  // 5. Scan user-guides (index + nested subdirs)
   walkBranchModules(path.join(docsDir, 'user-guides'), (mod, modDir, leafName) => {
-    const ugFile = path.join(modDir, `user_guide_${leafName}.md`);
-    if (fs.existsSync(ugFile)) mod.userGuideFiles.push(ugFile);
+    collectIndexAndNestedMd(modDir, `user_guide_${leafName}.md`, mod.userGuideFiles);
   });
 
   return modulesMap;
@@ -294,7 +319,13 @@ function populateModuleIndex(repoRoot, mod) {
   for (const reqFile of mod.reqFiles) {
     const content = fs.readFileSync(reqFile, 'utf8');
     const relFile = path.relative(repoRoot, reqFile).replace(/\\/g, '/');
-    extractReqDefinitionsFromMarkdown(content, relFile, mod.reqs, mod.outOfScopeReqs);
+    extractReqDefinitionsFromMarkdown(
+      content,
+      relFile,
+      mod.reqs,
+      mod.outOfScopeReqs,
+      mod.duplicateReqs
+    );
   }
 
   for (const tcFile of mod.tcFiles) {
@@ -314,7 +345,14 @@ function populateModuleIndex(repoRoot, mod) {
     const parsedTcFile = parseMarkdownFile(path.basename(tcFile), content);
     mod.parsedTcFiles.push({ relFile, tables, parsedTcFile });
     for (const tc of parsedTcFile.testCases) {
-      mod.tcs.set(tc.id, tc);
+      if (mod.tcs.has(tc.id)) {
+        mod.duplicateTcs.push({
+          id: tc.id,
+          file: relFile,
+          firstFile: mod.tcs.get(tc.id).sourceFile || relFile,
+        });
+      }
+      mod.tcs.set(tc.id, { ...tc, sourceFile: relFile });
       mod.tcList.push(tc);
     }
   }
@@ -325,8 +363,8 @@ function populateModuleIndex(repoRoot, mod) {
     const tables = parseMarkdownTables(content);
     const parsedExec = parseExecutionReport(content, relFile);
     mod.parsedExecFiles.push({ relFile, tables, parsedExec });
-    for (const tcRow of parsedExec.tcs || []) {
-      const baseTcId = normalizeTcId(tcRow.id);
+    for (const rawTc of extractDocTcStatusMap(parsedExec).keys()) {
+      const baseTcId = normalizeTcId(rawTc);
       if (baseTcId) mod.executedTcs.add(baseTcId);
     }
   }
@@ -337,17 +375,36 @@ function populateModuleIndex(repoRoot, mod) {
     const parsedBug = parseBugFile(content, relFile);
     mod.parsedBugFiles.push({ relFile, parsedBug });
     if (String(parsedBug.status || '').toUpperCase() !== 'CLOSED') {
+      const primaryTcs = extractPrimaryIds(parsedBug.tc, TC_ID_REGEX);
+      const primaryReqs = extractPrimaryIds(parsedBug.req, REQ_ID_REGEX);
       mod.openBugs.push({
         id: parsedBug.id,
         title: parsedBug.title,
         severity: parsedBug.severity,
         priority: parsedBug.priority,
         status: parsedBug.status,
-        tc: parsedBug.tc,
-        req: parsedBug.req,
+        tc: primaryTcs.length > 0 ? primaryTcs.join(', ') : parsedBug.tc,
+        req: primaryReqs.length > 0 ? primaryReqs.join(', ') : parsedBug.req,
       });
     }
   }
+}
+
+function extractModuleSlugFromDocsRel(relPath) {
+  const parts = String(relPath || '').split('/');
+  if (parts.length < 2) return null;
+  const branch = parts[0];
+  if (!['requirements', 'testcases', 'executions', 'bugs', 'user-guides'].includes(branch)) {
+    return null;
+  }
+  const seg1 = parts[1];
+  if (!seg1 || seg1.endsWith('.md') || seg1 === '_discovery' || seg1 === 'archive') return null;
+  if (seg1.startsWith('_')) {
+    const seg2 = parts[2];
+    if (!seg2 || seg2.endsWith('.md') || seg2 === '_discovery' || seg2 === 'archive') return null;
+    return `${seg1}/${seg2}`;
+  }
+  return seg1;
 }
 
 /**
@@ -375,7 +432,12 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
   }
 
   // 1. Validate all Markdown links, evidence image paths, and inline-code pointers across docs/
-  const allMdFiles = walkFiles(docsDir, (f) => f.endsWith('.md'));
+  const allMdFiles = walkFiles(docsDir, (f) => {
+    if (!f.endsWith('.md')) return false;
+    if (!targetModule) return true;
+    const rel = path.relative(docsDir, f).replace(/\\/g, '/').toLowerCase();
+    return extractModuleSlugFromDocsRel(rel) === targetModule;
+  });
   for (const mdFile of allMdFiles) {
     const content = fs.readFileSync(mdFile, 'utf8');
     const relFile = path.relative(repoRoot, mdFile).replace(/\\/g, '/');
@@ -394,7 +456,7 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
   }
 
   // 2. Validate Module Catalog tables & ID range continuity in docs/requirements/README.md, docs/requirements/_<system>/README.md, docs/testcases/README.md, and docs/user-guides/README.md
-  const { catalogs: reqCatalogs } = scanRequirementCatalogs(repoRoot);
+  const { catalogs: reqCatalogs } = targetModule ? { catalogs: [] } : scanRequirementCatalogs(repoRoot);
   for (const { relFile, catalog } of reqCatalogs) {
     if (!catalog || catalog.headers.length < 7) {
       schemaViolations.push({
@@ -427,22 +489,24 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
     }
   }
 
+  let tcCatalogTable = null;
+  let relTcReadme = '';
   const tcReadmePath = path.join(docsDir, 'testcases', 'README.md');
-  if (fs.existsSync(tcReadmePath)) {
-    const relTcReadme = path.relative(repoRoot, tcReadmePath).replace(/\\/g, '/');
+  if (fs.existsSync(tcReadmePath) && !targetModule) {
+    relTcReadme = path.relative(repoRoot, tcReadmePath).replace(/\\/g, '/');
     const tables = parseMarkdownTables(fs.readFileSync(tcReadmePath, 'utf8'));
-    const catalog = tables.find(
+    tcCatalogTable = tables.find(
       (t) =>
         (t.headers[0] || '').trim().toLowerCase() === 'module' &&
         (t.headers[1] || '').trim().toLowerCase().includes('prefix')
     );
-    if (!catalog || catalog.headers.length < 4) {
+    if (!tcCatalogTable || tcCatalogTable.headers.length < 4) {
       schemaViolations.push({
         file: relTcReadme,
         message: 'Expected Test Cases Module Catalog table (Module | Prefix TC ID | Dải đã dùng | Mã kế tiếp | ...) in docs/testcases/README.md',
       });
     } else {
-      for (const row of catalog.rows) {
+      for (const row of tcCatalogTable.rows) {
         const usedRange = (row[2] || '').replace(/`/g, '');
         const nextCode = (row[3] || '').replace(/`/g, '');
         const rangeMatch = usedRange.match(/(\d+)\s*(?:→|->)\s*(\d+)/);
@@ -483,6 +547,7 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
   const modulesMap = collectModuleArtifacts(repoRoot);
   const allKnownTcIds = new Set();
   const allKnownBugIds = new Set();
+  const allKnownBugsMap = new Map();
   let totalReqs = 0;
   let totalTcs = 0;
   let totalBugs = 0;
@@ -494,15 +559,33 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
     totalTcs += mod.tcList.length;
     for (const tcId of mod.tcs.keys()) allKnownTcIds.add(tcId);
 
+    for (const dup of mod.duplicateReqs) {
+      referentialErrors.push({
+        file: dup.file,
+        message: `Duplicate REQ ID "${dup.id}" defined in ${dup.file} (already defined in ${dup.firstFile})`,
+      });
+    }
+    for (const dup of mod.duplicateTcs) {
+      referentialErrors.push({
+        file: dup.file,
+        message: `Duplicate TC ID "${dup.id}" defined in ${dup.file} (already defined in ${dup.firstFile})`,
+      });
+    }
+
     // 3a. Check 13-column TC table schema + REQ references
+    const hasMultiPartTcFiles = mod.parsedTcFiles.length > 1;
+    let moduleTotalTcTables = 0;
     for (const { relFile, tables, parsedTcFile } of mod.parsedTcFiles) {
       const tcTables = tables.filter((t) => {
         const h0 = (t.headers[0] || '').trim().toLowerCase();
         const h1 = (t.headers[1] || '').trim().toLowerCase();
         return h0 === 'tc id' && (h1 === 'req id' || t.headers.length >= 10);
       });
+      moduleTotalTcTables += tcTables.length;
 
-      if (tcTables.length === 0) {
+      const isIndexFileWithParts =
+        hasMultiPartTcFiles && path.basename(relFile).startsWith('test_cases_');
+      if (tcTables.length === 0 && !isIndexFileWithParts) {
         schemaViolations.push({
           file: relFile,
           message: 'No Test Case table found with first column "TC ID"',
@@ -551,6 +634,12 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
         }
       }
     }
+    if (mod.parsedTcFiles.length > 0 && moduleTotalTcTables === 0 && hasMultiPartTcFiles) {
+      schemaViolations.push({
+        file: mod.parsedTcFiles[0].relFile,
+        message: 'No Test Case table found with first column "TC ID"',
+      });
+    }
 
     // 3b. Validate Bug Reports (REQ ID and TC ID referential integrity)
     const modBugIds = new Set();
@@ -558,10 +647,11 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
       totalBugs += 1;
       if (parsedBug.id) {
         allKnownBugIds.add(parsedBug.id);
+        allKnownBugsMap.set(parsedBug.id, parsedBug);
         modBugIds.add(parsedBug.id);
       }
 
-      const tcMatches = [...String(parsedBug.tc || '').matchAll(TC_ID_REGEX)].map((m) => m[0]);
+      const tcMatches = extractPrimaryIds(parsedBug.tc, TC_ID_REGEX);
       if (tcMatches.length === 0) {
         referentialErrors.push({
           file: relFile,
@@ -579,7 +669,7 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
         }
       }
 
-      const reqMatches = [...String(parsedBug.req || '').matchAll(REQ_ID_REGEX)].map((m) => m[0]);
+      const reqMatches = extractPrimaryIds(parsedBug.req, REQ_ID_REGEX);
       if (reqMatches.length === 0) {
         referentialErrors.push({
           file: relFile,
@@ -626,20 +716,20 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
               message: `Retest report references unknown BUG ID "${bugIdMatch[0]}"`,
             });
           }
-          for (const tcMatch of String(bugRow.tcReq || '').matchAll(TC_ID_REGEX)) {
-            const baseTc = normalizeTcId(tcMatch[0]);
+          for (const rawTc of extractPrimaryIds(bugRow.tcReq, TC_ID_REGEX)) {
+            const baseTc = normalizeTcId(rawTc);
             if (mod.tcs.size > 0 && !mod.tcs.has(baseTc)) {
               referentialErrors.push({
                 file: relFile,
-                message: `Retest report bug entry references unknown TC ID "${tcMatch[0]}"`,
+                message: `Retest report bug entry references unknown TC ID "${rawTc}"`,
               });
             }
           }
-          for (const reqMatch of String(bugRow.tcReq || '').matchAll(REQ_ID_REGEX)) {
-            if (mod.reqs.size > 0 && !mod.reqs.has(reqMatch[0])) {
+          for (const reqId of extractPrimaryIds(bugRow.tcReq, REQ_ID_REGEX)) {
+            if (mod.reqs.size > 0 && !mod.reqs.has(reqId)) {
               referentialErrors.push({
                 file: relFile,
-                message: `Retest report bug entry references unknown REQ ID "${reqMatch[0]}"`,
+                message: `Retest report bug entry references unknown REQ ID "${reqId}"`,
               });
             }
           }
@@ -670,6 +760,40 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
             });
           }
         }
+        const summaryTable = tables.find(
+          (t) =>
+            colIdx(t.header, /trạng thái|trang thai/i) >= 0 &&
+            colIdx(t.header, /số lượng|so luong/i) >= 0
+        );
+        if (summaryTable && Array.isArray(parsedExec.tcs) && parsedExec.tcs.length > 0) {
+          const stCol = colIdx(summaryTable.header, /trạng thái|trang thai/i);
+          const cntCol = colIdx(summaryTable.header, /số lượng|so luong/i);
+          for (const sRow of summaryTable.rows) {
+            const rawLabel = formatCellPlainText(sRow[stCol] || '').trim();
+            const rawCnt = formatCellPlainText(sRow[cntCol] || '').trim();
+            if (!/^\d+$/.test(rawCnt)) continue;
+            const declaredCnt = Number(rawCnt);
+            if (/^(?:tổng|tong|total)$/i.test(rawLabel)) {
+              if (declaredCnt !== parsedExec.tcs.length) {
+                referentialErrors.push({
+                  file: relFile,
+                  message: `Execution report summary total mismatch: summary table declares ${declaredCnt} total TCs but TC result table has ${parsedExec.tcs.length}`,
+                });
+              }
+            } else {
+              const normSt = normStatus(rawLabel);
+              if (['PASS', 'FAIL', 'BLOCKED', 'SKIPPED'].includes(normSt)) {
+                const actualCnt = parsedExec.tcs.filter((tc) => tc.status === normSt).length;
+                if (declaredCnt !== actualCnt) {
+                  referentialErrors.push({
+                    file: relFile,
+                    message: `Execution report summary count mismatch for "${normSt}": summary table declares ${declaredCnt} but TC result table has ${actualCnt}`,
+                  });
+                }
+              }
+            }
+          }
+        }
       }
 
       for (const tcRow of parsedExec.tcs || []) {
@@ -681,11 +805,11 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
           });
         }
         if (tcRow.reqId && mod.reqs.size > 0) {
-          for (const m of tcRow.reqId.matchAll(REQ_ID_REGEX)) {
-            if (!mod.reqs.has(m[0])) {
+          for (const reqId of extractPrimaryIds(tcRow.reqId, REQ_ID_REGEX)) {
+            if (!mod.reqs.has(reqId)) {
               referentialErrors.push({
                 file: relFile,
-                message: `Execution report FAIL detail for "${tcRow.id}" references unknown REQ ID "${m[0]}"`,
+                message: `Execution report FAIL detail for "${tcRow.id}" references unknown REQ ID "${reqId}"`,
               });
             }
           }
@@ -775,6 +899,83 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
     }
   }
 
+  // 3f. Validate Requirements Catalog "REQ đã dùng" & Test Cases Catalog "Số TC" count parity against parsed modules
+  for (const { namespace, relFile, catalog } of reqCatalogs) {
+    if (!catalog || catalog.headers.length < 7) continue;
+    const headersLower = catalog.headers.map((h) => h.trim().toLowerCase());
+    const docIdx = headersLower.findIndex(
+      (h) => h === 'tài liệu' || (h.includes('tài liệu') && !h.includes('mức phủ'))
+    );
+    const usedIdx = headersLower.findIndex(
+      (h) => h.includes('req đã dùng') || h.includes('dải đã dùng')
+    );
+    for (const row of catalog.rows) {
+      const docCell = String(row[docIdx >= 0 ? docIdx : 4] || '').trim();
+      if (!docCell || docCell === '—' || docCell === '-') continue;
+      const usedRange = String(row[usedIdx >= 0 ? usedIdx : 5] || '').replace(/`/g, '');
+      const parenMatch = usedRange.match(/\((\d+)\)/);
+      const rangeMatch = usedRange.match(/REQ-[A-Z0-9_-]+-(\d+)\s*(?:→|->)\s*REQ-[A-Z0-9_-]+-(\d+)/);
+      if (!parenMatch && !rangeMatch) continue;
+      const declaredReqCount = parenMatch
+        ? Number(parenMatch[1])
+        : Number(rangeMatch[2]) - Number(rangeMatch[1]) + 1;
+      const matchedMod = [...modulesMap.values()].find((m) => {
+        if (namespace) {
+          if (!m.slug.startsWith(`${namespace}/`)) return false;
+          const localSlug = m.slug.slice(namespace.length + 1);
+          return (
+            docCell.includes(`(${localSlug}/`) ||
+            docCell.includes(`${localSlug}/requirements_`) ||
+            docCell.includes(`(${m.slug}/`) ||
+            docCell.includes(`${m.slug}/requirements_`)
+          );
+        }
+        if (m.slug.startsWith('_')) return false;
+        return docCell.includes(`(${m.slug}/`) || docCell.includes(`${m.slug}/requirements_`);
+      });
+      if (matchedMod && matchedMod.reqs.size > 0 && matchedMod.reqs.size !== declaredReqCount) {
+        referentialErrors.push({
+          file: relFile,
+          message: `Requirements Catalog "REQ đã dùng" count mismatch for module "${matchedMod.slug}": catalog declares ${declaredReqCount} but ${matchedMod.reqs.size} REQs were found`,
+        });
+      }
+    }
+  }
+
+  if (tcCatalogTable && !targetModule) {
+    const tcHeadersLower = tcCatalogTable.headers.map((h) => h.trim().toLowerCase());
+    const soTcIdx = tcHeadersLower.findIndex((h) => h.includes('số tc'));
+    if (soTcIdx !== -1) {
+      for (const row of tcCatalogTable.rows) {
+        const rawCountStr = formatCellPlainText(row[soTcIdx] || '').trim();
+        const countMatch = rawCountStr.match(/^\d+$/);
+        if (!countMatch) continue;
+        const declaredCount = Number(countMatch[0]);
+        const prefixCell = formatCellPlainText(row[1] || '')
+          .replace(/`/g, '')
+          .trim();
+        const rowJoined = row.join(' ');
+        const matchedMod = [...modulesMap.values()].find((m) => {
+          if (rowJoined.includes(`(${m.slug}/`)) return true;
+          if (prefixCell && m.tcList.some((tc) => tc.id.startsWith(prefixCell))) return true;
+          return false;
+        });
+        if (matchedMod) {
+          const totalCount = matchedMod.tcList.length;
+          const activeCount = matchedMod.tcList.filter(
+            (tc) => !/deprecated|🗑️/i.test(`${tc.title || ''} ${(tc.tags || []).join(' ')}`)
+          ).length;
+          if (declaredCount !== totalCount && declaredCount !== activeCount) {
+            referentialErrors.push({
+              file: relTcReadme,
+              message: `Test Cases Catalog "Số TC" mismatch for module "${matchedMod.slug}": catalog declares ${declaredCount} but ${totalCount} TCs (${activeCount} active) were found`,
+            });
+          }
+        }
+      }
+    }
+  }
+
   // 4. Validate Bug Catalog schema & cross-references in docs/bugs/README.md if present
   const bugsReadmePath = path.join(docsDir, 'bugs', 'README.md');
   if (fs.existsSync(bugsReadmePath) && !targetModule) {
@@ -798,14 +999,38 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
           message: `Bug Catalog table row count mismatch (${parsedIndex.rows.length} parsed vs ${catalogTable.rows.length} raw)`,
         });
       }
+      const catalogedBugIds = new Set();
       for (const bugRow of parsedIndex.rows) {
+        catalogedBugIds.add(bugRow.id);
         if (allKnownBugIds.size > 0 && !allKnownBugIds.has(bugRow.id)) {
           referentialErrors.push({
             file: relBugsReadme,
             message: `Bug Catalog references unknown BUG ID "${bugRow.id}" (no matching BUG_*.md found)`,
           });
+        } else if (allKnownBugsMap.has(bugRow.id)) {
+          const targetBug = allKnownBugsMap.get(bugRow.id);
+          if (bugRow.severity && targetBug.severity && bugRow.severity !== targetBug.severity) {
+            referentialErrors.push({
+              file: relBugsReadme,
+              message: `Bug Catalog severity mismatch for "${bugRow.id}": catalog says "${bugRow.severity}" but BUG file has "${targetBug.severity}"`,
+            });
+          }
+          if (bugRow.priority && targetBug.priority && bugRow.priority !== targetBug.priority) {
+            referentialErrors.push({
+              file: relBugsReadme,
+              message: `Bug Catalog priority mismatch for "${bugRow.id}": catalog says "${bugRow.priority}" but BUG file has "${targetBug.priority}"`,
+            });
+          }
+          const catalogIsClosed = bugRow.status === 'CLOSED';
+          const fileIsClosed = targetBug.status === 'CLOSED';
+          if (catalogIsClosed !== fileIsClosed) {
+            referentialErrors.push({
+              file: relBugsReadme,
+              message: `Bug Catalog status mismatch for "${bugRow.id}": catalog status is "${bugRow.status}" but BUG file status is "${targetBug.status}"`,
+            });
+          }
         }
-        const tcRefs = [...String(bugRow.tc || '').matchAll(TC_ID_REGEX)].map((m) => normalizeTcId(m[0]));
+        const tcRefs = extractPrimaryIds(bugRow.tc, TC_ID_REGEX).map((m) => normalizeTcId(m));
         for (const tcRef of tcRefs) {
           if (allKnownTcIds.size > 0 && !allKnownTcIds.has(tcRef)) {
             referentialErrors.push({
@@ -813,6 +1038,14 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
               message: `Bug Catalog row "${bugRow.id}" references unknown TC ID "${tcRef}"`,
             });
           }
+        }
+      }
+      for (const knownBugId of allKnownBugIds) {
+        if (!catalogedBugIds.has(knownBugId)) {
+          referentialErrors.push({
+            file: relBugsReadme,
+            message: `Bug file "${knownBugId}" is missing from Bug Catalog in docs/bugs/README.md`,
+          });
         }
       }
     }
@@ -828,7 +1061,9 @@ export function validateDocsTree(repoRoot = path.resolve(__dirname, '..'), optio
     brokenPointers,
     schemaViolations,
     referentialErrors,
-    modules: [...modulesMap.keys()].sort(),
+    modules: [...modulesMap.keys()]
+      .filter((k) => !targetModule || k.toLowerCase() === targetModule)
+      .sort(),
     stats: {
       markdownFiles: allMdFiles.length,
       totalReqs,
@@ -1157,8 +1392,8 @@ export function computeTraceabilityReport(repoRoot = path.resolve(__dirname, '..
 
 function numericRunOrder(execEntry) {
   const raw = String(execEntry?.parsedExec?.runId || execEntry?.relFile || '');
-  const m = raw.match(/\d+/);
-  return m ? Number(m[0]) : 0;
+  const matches = [...raw.matchAll(/\d+/g)];
+  return matches.length ? Number(matches[matches.length - 1][0]) : 0;
 }
 
 /**
@@ -1176,6 +1411,7 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
   let totalFail = 0;
   let totalBlocked = 0;
   let totalSkipped = 0;
+  let totalUnexecuted = 0;
   let totalDirty = 0;
   let highPrioPass = 0;
   let highPrioExecDenom = 0;
@@ -1215,44 +1451,69 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
     executionRunsCount += nonRetestExecs.length;
     retestRunsCount += retestExecs.length;
 
-    const latestExec =
-      nonRetestExecs[nonRetestExecs.length - 1] ||
-      retestExecs[retestExecs.length - 1] ||
-      null;
+    const orderedExecs = [...mod.parsedExecFiles].sort(
+      (a, b) =>
+        numericRunOrder(a) - numericRunOrder(b) ||
+        (a.parsedExec.isRetest ? 1 : 0) - (b.parsedExec.isRetest ? 1 : 0)
+    );
+    const latestExec = orderedExecs[orderedExecs.length - 1] || null;
+    const latestNonRetest = nonRetestExecs[nonRetestExecs.length - 1] || null;
+
+    const tcStatusById = new Map();
+    for (const execEntry of orderedExecs) {
+      for (const [rawTc, st] of extractDocTcStatusMap(execEntry.parsedExec).entries()) {
+        const baseTcId = normalizeTcId(rawTc);
+        if (baseTcId && st) tcStatusById.set(baseTcId, st);
+      }
+    }
 
     let modPass = 0;
     let modFail = 0;
     let modBlocked = 0;
     let modSkipped = 0;
-    const modDirty = Number(latestExec?.parsedExec?.dirty || 0);
-    const tcStatusById = new Map();
+    for (const st of tcStatusById.values()) {
+      if (st === 'PASS') modPass += 1;
+      else if (st === 'FAIL') modFail += 1;
+      else if (st === 'BLOCKED') modBlocked += 1;
+      else if (st === 'SKIPPED') modSkipped += 1;
+    }
 
-    if (latestExec && Array.isArray(latestExec.parsedExec.tcs)) {
-      for (const tcRow of latestExec.parsedExec.tcs) {
-        const baseTcId = normalizeTcId(tcRow.id);
-        const st = String(tcRow.status || '').toUpperCase();
-        tcStatusById.set(baseTcId, st);
-        if (st === 'PASS') modPass += 1;
-        else if (st === 'FAIL') modFail += 1;
-        else if (st === 'BLOCKED') modBlocked += 1;
-        else if (st === 'SKIPPED') modSkipped += 1;
+    const dirtyExec =
+      [...orderedExecs]
+        .reverse()
+        .find(
+          (e) =>
+            (e.parsedExec.kind !== 'retest' && !e.parsedExec.isRetest) ||
+            Number(e.parsedExec.dirty || 0) > 0
+        ) || latestExec;
+    const modDirty = Number(dirtyExec?.parsedExec?.dirty || 0);
 
-        const tcDef = mod.tcs.get(baseTcId);
-        const isHighPrio = Boolean(
-          tcDef && /critical|high|p1|cao/i.test(String(tcDef.priority || ''))
-        );
-        if (isHighPrio && (st === 'PASS' || st === 'FAIL' || st === 'BLOCKED')) {
+    const modDesignedTcs = mod.tcList.length;
+    let modExecutedDesignedCount = 0;
+    for (const tcDef of mod.tcList) {
+      const st = tcStatusById.get(tcDef.id) || '';
+      if (st) modExecutedDesignedCount += 1;
+      if (orderedExecs.length > 0) {
+        const isHighPrio = /critical|high|p1|cao/i.test(String(tcDef.priority || ''));
+        if (isHighPrio && st !== 'SKIPPED') {
           highPrioExecDenom += 1;
           if (st === 'PASS') highPrioPass += 1;
         }
       }
     }
+    const modUnexecutedTcs =
+      orderedExecs.length > 0
+        ? Math.max(0, modDesignedTcs - modExecutedDesignedCount)
+        : modDesignedTcs;
 
     totalPass += modPass;
     totalFail += modFail;
     totalBlocked += modBlocked;
     totalSkipped += modSkipped;
     totalDirty += modDirty;
+    if (orderedExecs.length > 0) {
+      totalUnexecuted += modUnexecutedTcs;
+    }
 
     const modExecDenom = modPass + modFail + modBlocked;
     const modPassRate =
@@ -1273,25 +1534,38 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
       });
     }
 
-    if (modSkipped > 0 || modBlocked > 0 || modDirty > 0) {
+    if (
+      modExecDenom > 0 &&
+      (modSkipped > 0 || modBlocked > 0 || modDirty > 0 || modUnexecutedTcs > 0)
+    ) {
       untestedEntries.push({
         module: mod.slug,
-        status: `⚠️ Nợ kiểm thử (${modBlocked} BLOCKED · ${modSkipped} SKIPPED · ${modDirty} data chưa dọn)`,
-        reason: 'TC bị chặn, tạm hoãn hoặc còn dữ liệu kiểm thử chưa dọn trong đợt chạy mới nhất',
-        risk: modBlocked > 0 ? '🟠 High' : '🟡 Medium',
+        status: `⚠️ Nợ kiểm thử (${modBlocked} BLOCKED · ${modSkipped} SKIPPED · ${modUnexecutedTcs} chưa chạy · ${modDirty} data chưa dọn)`,
+        reason:
+          'TC chưa thực thi hết, bị chặn, tạm hoãn hoặc còn dữ liệu kiểm thử chưa dọn trong đợt chạy mới nhất',
+        risk: modBlocked > 0 || modUnexecutedTcs > 0 ? '🟠 High' : '🟡 Medium',
       });
+    }
+
+    let modSource = '—';
+    if (latestNonRetest && latestExec && latestExec !== latestNonRetest) {
+      modSource = `${latestNonRetest.relFile} + ${latestExec.relFile}`;
+    } else if (latestExec) {
+      modSource = latestExec.relFile;
     }
 
     moduleRows.push({
       module: mod.slug,
+      designed: modDesignedTcs,
       total: modTotalTcs,
       pass: modPass,
       fail: modFail,
       blocked: modBlocked,
       skipped: modSkipped,
+      unexecuted: modUnexecutedTcs,
       dirty: modDirty,
       passRate: modPassRate,
-      source: latestExec ? latestExec.relFile : '—',
+      source: modSource,
     });
 
     // Evaluate Critical REQs in module (only for modules that have test cases)
@@ -1327,6 +1601,8 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
         bySeverity[sev].closed += 1;
       } else {
         bySeverity[sev].open += 1;
+        const primaryTcs = extractPrimaryIds(parsedBug.tc, TC_ID_REGEX);
+        const primaryReqs = extractPrimaryIds(parsedBug.req, REQ_ID_REGEX);
         openBugs.push({
           module: mod.slug,
           id: parsedBug.id,
@@ -1334,8 +1610,8 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
           severity: sev,
           priority: parsedBug.priority || '—',
           status: parsedBug.status,
-          tc: parsedBug.tc,
-          req: parsedBug.req,
+          tc: primaryTcs.length > 0 ? primaryTcs.join(', ') : parsedBug.tc,
+          req: primaryReqs.length > 0 ? primaryReqs.join(', ') : parsedBug.req,
         });
       }
     }
@@ -1448,10 +1724,12 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
     '|---|---|',
     `| Phạm vi · Mốc | ${scopeLabel} · ${milestone} |`,
     `| Nguồn dữ liệu | ${executionRunsCount} execution, ${retestRunsCount} retest, ${defects.total} bug reports |`,
+    `| TC chưa chạy | ${totalUnexecuted} |`,
     '| Cấu trúc tài liệu | Biên soạn theo cấu trúc ISO/IEC/IEEE 29119-3 — Test Completion Report (ánh xạ ở mục 9) |',
     '',
     '## 1. Khuyến nghị (Test Completion Evaluation)',
     `> ## ${verdictBanner}`,
+    `- **Tiến độ thực thi:** Đã thực thi ${totalExecutedWithSkipped} TC · Còn **${totalUnexecuted} TC chưa chạy**.`,
     `- **Ranh giới trách nhiệm:** QA đưa ra khuyến nghị dựa trên bằng chứng định lượng; quyết định phát hành cuối cùng thuộc về PM/PO.`,
     '',
     '## 2. Vùng CHƯA Được Kiểm Thử & Nợ Kiểm Thử (Deviations & Residual Risks)',
@@ -1548,6 +1826,7 @@ export function computeTestSummaryReport(repoRoot = path.resolve(__dirname, '..'
       fail: totalFail,
       blocked: totalBlocked,
       skipped: totalSkipped,
+      unexecuted: totalUnexecuted,
       dirty: totalDirty,
       passRate,
       blockedRate,
@@ -1638,7 +1917,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
       outFile,
     });
   } else {
-    const result = validateDocsTree(rootDir);
+    const result = validateDocsTree(rootDir, { module: moduleSlug });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else if (result.valid) {

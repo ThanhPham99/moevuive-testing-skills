@@ -66,6 +66,11 @@ export function parseCliArgs(argv = []) {
   const opts = {};
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
+    if (token === '-h') {
+      opts.h = true;
+      opts.help = true;
+      continue;
+    }
     if (!token.startsWith('--')) continue;
     const eqIdx = token.indexOf('=');
     if (eqIdx !== -1) {
@@ -74,7 +79,7 @@ export function parseCliArgs(argv = []) {
     } else {
       const key = token.slice(2).trim();
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--')) {
+      if (next !== undefined && !next.startsWith('-')) {
         opts[key] = next;
         i += 1;
       } else {
@@ -381,9 +386,9 @@ export function markdownToAdf(markdown) {
         rowStr
           .trim()
           .replace(/^\|/, '')
-          .replace(/\|$/, '')
-          .split('|')
-          .map((c) => c.trim());
+          .replace(/(?<!\\)\|$/, '')
+          .split(/(?<!\\)\|/)
+          .map((c) => c.replace(/\\\|/g, '|').trim());
 
       const headers = parseRowCells(trimmed);
       i += 2;

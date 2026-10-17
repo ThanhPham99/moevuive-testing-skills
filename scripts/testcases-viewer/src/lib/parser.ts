@@ -14,56 +14,16 @@ import {
   queryTestCases as coreQueryTestCases,
   splitCells as coreSplitCells,
 } from '../../../viewer-core.mjs'
+import type {
+  MarkdownTable,
+  ParsedFile,
+  SortKey,
+  TestCase,
+  TestCaseQuery,
+  TestCaseQueryResult,
+} from '../../../viewer-core.mjs'
 
-export interface TestCase {
-  uid: string
-  id: string
-  reqIds: string[]
-  module: string
-  risk: string
-  title: string
-  preCondition: string
-  steps: string
-  testData: string
-  expected: string
-  priority: string
-  automatable: string
-  autoType: string
-  tags: string[]
-  group: string
-  sourceFile: string
-}
-
-export interface ParsedFile {
-  fileName: string
-  docTitle: string
-  testCases: TestCase[]
-}
-
-export interface MarkdownTable {
-  heading: string
-  headers: string[]
-  rows: string[][]
-}
-
-export type SortKey = 'id' | 'title' | 'priority' | 'risk' | 'group'
-
-export interface TestCaseQuery {
-  search?: string
-  priorities?: Set<string> | string[]
-  automatable?: string
-  tag?: string
-  scopeKey?: string
-  sort?: { key: SortKey; dir: 1 | -1 }
-}
-
-export interface TestCaseQueryResult {
-  allCases: TestCase[]
-  filtered: TestCase[]
-  allTags: string[]
-  stats: Record<string, number>
-  exportBaseName: string
-}
+export type { MarkdownTable, ParsedFile, SortKey, TestCase, TestCaseQuery, TestCaseQueryResult }
 
 export const PRIORITY_ORDER: Record<string, number> = CORE_PRIORITY_ORDER
 export const RISK_ORDER: Record<string, number> = CORE_RISK_ORDER

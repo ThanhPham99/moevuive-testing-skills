@@ -836,6 +836,79 @@ test('Seam 6: Shared Viewer Core Module (Bugs, Execution, RTM, Export Plan, CSV 
   assert.equal(trend[0].grp, 'FIXEDTREND');
   assert.equal(trend[0].id, 'CRM_CUST_TC_011');
 
+  // Verify computeExecutionTrend also maps retest_report.md Section 2 bug verification outcomes (d.bugs) across all 4 statuses (FIXED, NOT_FIXED, PARTIAL, CANNOT_VERIFY) and multi-bug collision precedence
+  const run1MultiMd = [
+    '# Execution Report — Customers · run_1785700500',
+    '| Thông tin | Nội dung |',
+    '|---|---|',
+    '| Run ID | run_1785700500 |',
+    '## 2. Chi Tiết Thực Thi',
+    '| TC ID | REQ ID | Tên TC | Vòng | Kết quả | Bug ID | Evidence | Ghi chú |',
+    '|---|---|---|---|---|---|---|---|',
+    '| CRM_CUST_TC_011 | REQ-CUST-04 | Lưu SĐT | 2 | ❌ FAIL | BUG_CUST_002 | — | Lỗi 500 |',
+    '| CRM_CUST_TC_012 | REQ-CUST-05 | Xóa KH | 2 | ❌ FAIL | BUG_CUST_003 | — | Lỗi 500 |',
+    '| CRM_CUST_TC_013 | REQ-CUST-06 | Xuất CSV | 2 | ❌ FAIL | BUG_CUST_004 | — | Lỗi format |',
+    '| CRM_CUST_TC_014 | REQ-CUST-07 | Gửi SMS | 2 | ❌ FAIL | BUG_CUST_005 | — | Gateway lỗi |',
+    '| CRM_CUST_TC_015 | REQ-CUST-08 | Lưu Địa chỉ | 2 | ❌ FAIL | BUG_CUST_006, BUG_CUST_007 | — | 2 bugs trên 1 TC |',
+  ].join('\n');
+  const retestOnlyMd = [
+    '# Retest Report — Customers · RETEST',
+    '| Thông tin | Nội dung |',
+    '|---|---|',
+    '| Retest ID | retest_1785701500 |',
+    '| Mode | RETEST |',
+    '## 2. Kết quả từng bug',
+    '### BUG_CUST_002 — Lỗi lưu SĐT',
+    '| Thông tin | Nội dung |',
+    '|---|---|',
+    '| Bug | BUG_CUST_002 |',
+    '| TC / REQ liên quan | CRM_CUST_TC_011 · REQ-CUST-04 |',
+    '| **Kết quả** | ✅ FIXED |',
+    '### BUG_CUST_003 — Lỗi xóa KH',
+    '| Thông tin | Nội dung |',
+    '|---|---|',
+    '| Bug | BUG_CUST_003 |',
+    '| TC / REQ liên quan | CRM_CUST_TC_012 · REQ-CUST-05 |',
+    '| **Kết quả** | ❌ NOT_FIXED |',
+    '### BUG_CUST_004 — Lỗi xuất CSV',
+    '| Thông tin | Nội dung |',
+    '|---|---|',
+    '| Bug | BUG_CUST_004 |',
+    '| TC / REQ liên quan | CRM_CUST_TC_013 · REQ-CUST-06 |',
+    '| **Kết quả** | 🟠 PARTIAL |',
+    '### BUG_CUST_005 — Lỗi gửi SMS',
+    '| Thông tin | Nội dung |',
+    '|---|---|',
+    '| Bug | BUG_CUST_005 |',
+    '| TC / REQ liên quan | CRM_CUST_TC_014 · REQ-CUST-07 |',
+    '| **Kết quả** | ⚠️ CANNOT_VERIFY |',
+    '### BUG_CUST_006 — Lỗi địa chỉ 1 (chưa fix)',
+    '| Thông tin | Nội dung |',
+    '|---|---|',
+    '| Bug | BUG_CUST_006 |',
+    '| TC / REQ liên quan | CRM_CUST_TC_015 · REQ-CUST-08 |',
+    '| **Kết quả** | ❌ NOT_FIXED |',
+    '### BUG_CUST_007 — Lỗi địa chỉ 2 (đã fix)',
+    '| Thông tin | Nội dung |',
+    '|---|---|',
+    '| Bug | BUG_CUST_007 |',
+    '| TC / REQ liên quan | CRM_CUST_TC_015 · REQ-CUST-08 |',
+    '| **Kết quả** | ✅ FIXED |',
+  ].join('\n');
+  const run1MultiDoc = parseExecutionReport(run1MultiMd, 'execution_report.md');
+  const retestDoc = parseExecutionReport(retestOnlyMd, 'retest_report.md');
+  const retestTrend = computeExecutionTrend([run1MultiDoc, retestDoc]);
+  const trendById = new Map(retestTrend.map((r) => [r.id, r.grp]));
+  assert.equal(trendById.get('CRM_CUST_TC_011'), 'FIXEDTREND', 'FIXED must map to PASS -> FIXEDTREND');
+  assert.equal(trendById.get('CRM_CUST_TC_012'), 'RECUR', 'NOT_FIXED must map to FAIL -> RECUR');
+  assert.equal(trendById.get('CRM_CUST_TC_013'), 'RECUR', 'PARTIAL must map to FAIL -> RECUR');
+  assert.equal(trendById.get('CRM_CUST_TC_014'), 'TOBLOCKED', 'CANNOT_VERIFY must map to BLOCKED -> TOBLOCKED');
+  assert.equal(
+    trendById.get('CRM_CUST_TC_015'),
+    'RECUR',
+    'Multi-bug collision on same TC ID must keep worst status (NOT_FIXED + FIXED -> FAIL -> RECUR)'
+  );
+
   const rtmMd = [
     '# Ma Trận Truy Vết (RTM) — Customers',
     '## Ma trận chi tiết',
@@ -1998,6 +2071,32 @@ test('Seam 11: Zero-Dependency Jira & Xray Integration Suite (utils, jira_fetche
     assert.match(twoArgPayload.fields.description, /## Evidence/);
     assert.deepEqual(twoArgPayload.fields.customfield_10042, { value: 'Major' });
 
+    // Verify buildJiraBugPayload strips parenthetical historical mistakes (e.g. BUG_login_1785678750_TC039.md)
+    const realTc039BugMd = fs.readFileSync(
+      path.join(REPO_ROOT, 'docs', 'bugs', 'login', 'BUG_login_1785678750_TC039.md'),
+      'utf8'
+    );
+    const parsedTc039Bug = bugCreatorMod.parseBugMarkdown(
+      realTc039BugMd,
+      'BUG_login_1785678750_TC039.md'
+    );
+    assert.equal(parsedTc039Bug.tc, 'CRM_LOGIN_TC_039');
+    assert.equal(parsedTc039Bug.req, 'REQ-LOGIN-01');
+    const tc039Payload = bugCreatorMod.buildJiraBugPayload(parsedTc039Bug, {
+      projectKey: 'PROJ',
+      apiVersion: '3',
+    });
+    assert.ok(tc039Payload.fields.labels.includes('CRM_LOGIN_TC_039'));
+    assert.ok(tc039Payload.fields.labels.includes('REQ-LOGIN-01'));
+    assert.ok(
+      !tc039Payload.fields.labels.includes('CRM_LOGIN_TC_004'),
+      'buildJiraBugPayload must not attach historical mistake CRM_LOGIN_TC_004 from parenthetical note as a Jira label'
+    );
+    assert.ok(
+      !tc039Payload.fields.labels.includes('REQ-LOGIN-24'),
+      'buildJiraBugPayload must not attach historical mistake REQ-LOGIN-24 from parenthetical note as a Jira label'
+    );
+
     let attachmentUploaded = false;
     const bugMockFetch = async (url, init = {}) => {
       const u = String(url);
@@ -2379,10 +2478,756 @@ test('Seam 13: Deterministic ISO/IEC/IEEE 29119-3 Test Completion Summary & 7 Ex
     );
     assert.ok(fs.existsSync(outSummaryFile), 'validate-docs.mjs --summary --out must write summary report file');
     assert.match(fs.readFileSync(outSummaryFile, 'utf8'), /🟢 GO — Đạt 7\/7 tiêu chí exit/);
+    assert.equal(realSummary.execution.unexecuted, 9, 'login module has 50 designed TCs and 41 executed TCs -> 9 unexecuted TCs');
+    assert.match(realSummary.markdown, /9 chưa chạy/, 'Section 2 debt status must surface 9 unexecuted TCs for login');
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+
+  // 3. Verify Chronological Execution Overlay (run_100 FAIL -> retest_110 FIXED) and unexecuted High-Priority TC denominator in Exit Criterion #3
+  const overlayRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'summary-retest-overlay-'));
+  try {
+    const reqDir = path.join(overlayRoot, 'docs', 'requirements', 'auth');
+    const tcDir = path.join(overlayRoot, 'docs', 'testcases', 'auth');
+    const runDir = path.join(overlayRoot, 'docs', 'executions', 'auth', 'run_100');
+    const retestDir = path.join(overlayRoot, 'docs', 'executions', 'auth', 'retest_110');
+    fs.mkdirSync(reqDir, { recursive: true });
+    fs.mkdirSync(tcDir, { recursive: true });
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.mkdirSync(retestDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(reqDir, 'requirements_auth.md'),
+      [
+        '# Requirements Auth',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-AUTH-01 | Valid Login | Desc | AC | 🟢 | — | DOM |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tcDir, 'test_cases_auth.md'),
+      [
+        '# Test Cases Auth',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_AUTH_TC_001 | REQ-AUTH-01 | AUTH | High | Valid Login | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+        '| CRM_AUTH_TC_002 | REQ-AUTH-01 | AUTH | High | Unexecuted High TC | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(runDir, 'execution_report.md'),
+      [
+        '# Execution Report — Auth',
+        '| Thông tin | Nội dung |',
+        '|---|---|',
+        '| Run ID | run_100 |',
+        '## 2. Kết quả từng TC',
+        '| TC ID | Test Scenario | Kết quả | Bước fail | Ghi chú |',
+        '|---|---|---|---|---|',
+        '| CRM_AUTH_TC_001 | Valid Login | ❌ FAIL | 1 | Initial bug |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(retestDir, 'retest_report.md'),
+      [
+        '# Retest Report — Auth · RETEST',
+        '| Thông tin | Nội dung |',
+        '|---|---|',
+        '| Retest ID | retest_110 |',
+        '| Mode | RETEST |',
+        '## 2. Kết quả từng bug',
+        '### BUG_auth_1 — Login fails',
+        '| Thông tin | Nội dung |',
+        '|---|---|',
+        '| Bug | BUG_auth_1 |',
+        '| TC / REQ liên quan | CRM_AUTH_TC_001 · REQ-AUTH-01 |',
+        '| **Kết quả** | ✅ FIXED |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const overlaidSummary = computeTestSummaryReport(overlayRoot, { milestone: 'Release v1.1' });
+    assert.equal(
+      overlaidSummary.execution.pass,
+      1,
+      'Chronological overlay must update CRM_AUTH_TC_001 from FAIL (run_100) to PASS (retest_110)'
+    );
+    assert.equal(overlaidSummary.execution.fail, 0);
+    assert.equal(overlaidSummary.execution.unexecuted, 1);
+    assert.equal(
+      overlaidSummary.execution.highPriorityPassRate,
+      50,
+      'Exit Criterion #3 must include unexecuted High-Priority TC_002 in denominator (1/2 = 50%)'
+    );
+    assert.equal(overlaidSummary.verdict, 'CONDITIONAL_GO');
+  } finally {
+    fs.rmSync(overlayRoot, { recursive: true, force: true });
+  }
+});
+
+test('Seam 14: Multi-Part parts/part_*.md Support (Test Cases & User Guides) and Cross-Catalog Metadata Parity Gate', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'multipart-and-parity-test-'));
+  try {
+    const reqDir = path.join(tmpRoot, 'docs', 'requirements', 'orders');
+    const tcDir = path.join(tmpRoot, 'docs', 'testcases', 'orders');
+    const tcPartsDir = path.join(tcDir, 'parts');
+    const ugDir = path.join(tmpRoot, 'docs', 'user-guides', 'orders');
+    const ugPartsDir = path.join(ugDir, 'parts');
+    fs.mkdirSync(reqDir, { recursive: true });
+    fs.mkdirSync(tcPartsDir, { recursive: true });
+    fs.mkdirSync(ugPartsDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(reqDir, 'requirements_orders.md'),
+      [
+        '# Requirements Orders',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-ORD-01 | Create Order | Desc | AC | 🟢 | — | DOM |',
+        '| REQ-ORD-02 | Cancel Order | Desc | AC | 🟢 | — | DOM |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    // Index file without 13-col TC table, pointing to parts/part_01_create.md & parts/part_02_cancel.md
+    fs.writeFileSync(
+      path.join(tcDir, 'test_cases_orders.md'),
+      [
+        '# Test Cases — Orders (Index)',
+        '| File | Nhóm chức năng | Số TC | TC ID range | REQ bao phủ |',
+        '|---|---|---|---|---|',
+        '| [parts/part_01_create.md](parts/part_01_create.md) | Create | 1 | CRM_ORD_TC_001 | REQ-ORD-01 |',
+        '| [parts/part_02_cancel.md](parts/part_02_cancel.md) | Cancel | 1 | CRM_ORD_TC_002 | REQ-ORD-02 |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tcPartsDir, 'part_01_create.md'),
+      [
+        '# Part 1 — Create Order',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_ORD_TC_001 | REQ-ORD-01 | ORD | High | Create valid order | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tcPartsDir, 'part_02_cancel.md'),
+      [
+        '# Part 2 — Cancel Order',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_ORD_TC_002 | REQ-ORD-02 | ORD | Medium | Cancel pending order | None | 1. Go | None | 1. Ok | Medium | Yes | UI | @Regression |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(ugDir, 'user_guide_orders.md'),
+      [
+        '# Hướng dẫn sử dụng — Orders',
+        '- [Phần 1: Tạo đơn](parts/part_01_create_guide.md)',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(ugPartsDir, 'part_01_create_guide.md'),
+      [
+        '# Phần 1: Tạo đơn hàng',
+        '<!-- Nguồn: REQ-ORD-01 -->',
+        'Hướng dẫn chi tiết tạo đơn hàng.',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const validPartsRes = validateDocsTree(tmpRoot);
+    assert.equal(
+      validPartsRes.valid,
+      true,
+      `Multi-part test_cases_orders.md + parts/*.md must pass validateDocsTree without false-positive errors, got schema=${JSON.stringify(validPartsRes.schemaViolations)}, ref=${JSON.stringify(validPartsRes.referentialErrors)}`
+    );
+    assert.equal(validPartsRes.stats.totalTcs, 2, 'validateDocsTree must aggregate TCs across all parts/*.md');
+
+    const partsRtm = computeTraceabilityReport(tmpRoot, { module: 'orders' });
+    assert.equal(partsRtm.summary.totalTcs, 2);
+    assert.equal(partsRtm.summary.coveredReqs, 2);
+    assert.equal(partsRtm.summary.coveragePct, 100);
+
+    // Verify clean canonical TC/REQ IDs in computeTestSummaryReport Section 5 for BUG_login_1785678750_TC039
+    const realLoginSummary = computeTestSummaryReport(REPO_ROOT, { module: 'login' });
+    const bug039Entry = realLoginSummary.defects.openBugs.find(
+      (b) => b.id === 'BUG_login_1785678750_TC039'
+    );
+    assert.equal(bug039Entry.tc, 'CRM_LOGIN_TC_039');
+    assert.equal(bug039Entry.req, 'REQ-LOGIN-01');
+    assert.ok(
+      !realLoginSummary.markdown.includes('file gốc ghi nhầm CRM_LOGIN_TC_004'),
+      'Section 5 open bugs table must render canonical IDs without parenthetical historical notes'
+    );
+
+    // Verify Cross-Catalog Metadata Parity Gate (docs/testcases/README.md Số TC mismatch & docs/bugs/README.md severity/status mismatch)
+    fs.writeFileSync(
+      path.join(tmpRoot, 'docs', 'testcases', 'README.md'),
+      [
+        '# Danh mục Test Cases',
+        '| Module | Prefix TC ID | Dải đã dùng | Mã kế tiếp | Số TC | Độ hạt | REQ bao phủ | Tài liệu | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| Orders | `CRM_ORD_TC_` | `001` → `002` | `003` | 99 | TÁCH | 2/2 | [test_cases_orders.md](orders/test_cases_orders.md) | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const bugOrdersDir = path.join(tmpRoot, 'docs', 'bugs', 'orders');
+    fs.mkdirSync(bugOrdersDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(bugOrdersDir, 'BUG_orders_1787000001_TC001.md'),
+      [
+        '# [BUG] Order total rounding error',
+        '## Thông tin chung',
+        '- **ID:** BUG_orders_1787000001_TC001',
+        '- **Severity:** 🔴 Critical',
+        '- **Priority:** P1',
+        '- **Môi trường:** Staging',
+        '- **Build / Version:** v1.0.0',
+        '- **Test case liên quan:** CRM_ORD_TC_001',
+        '- **REQ ID liên quan:** REQ-ORD-01',
+        '- **Ngày phát hiện:** 2026-10-17',
+        '## Steps to Reproduce',
+        '1. Create order',
+        '## Expected Result',
+        '100',
+        '## Actual Result',
+        '99',
+        '## Lịch sử retest',
+        '| Ngày | Build | Kết quả | Retest report | Ghi chú |',
+        '|---|---|---|---|---|',
+      ].join('\n'),
+      'utf8'
+    );
+
+    // Catalog wrongly claims Severity is Minor and Status is Đã đóng while BUG file is Critical & OPEN
+    fs.writeFileSync(
+      path.join(tmpRoot, 'docs', 'bugs', 'README.md'),
+      [
+        '# Danh mục Bug',
+        '| Mã bug | Module | Tiêu đề ngắn | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+        '|---|---|---|---|---|---|---|---|',
+        '| [BUG_orders_1787000001_TC001](orders/BUG_orders_1787000001_TC001.md) | `ORD` | Order total rounding error | 🟡 Minor | P1 | 🟢 Đã đóng | `CRM_ORD_TC_001` | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const driftRes = validateDocsTree(tmpRoot);
+    assert.equal(driftRes.valid, false);
+    assert.ok(
+      driftRes.referentialErrors.some(
+        (e) => e.file.includes('testcases/README.md') && e.message.includes('Số TC')
+      ),
+      'validateDocsTree must detect Số TC count mismatch in docs/testcases/README.md'
+    );
+    assert.ok(
+      driftRes.referentialErrors.some(
+        (e) => e.file.includes('bugs/README.md') && e.message.includes('severity mismatch')
+      ),
+      'validateDocsTree must detect severity mismatch between docs/bugs/README.md and BUG_*.md'
+    );
+    assert.ok(
+      driftRes.referentialErrors.some(
+        (e) => e.file.includes('bugs/README.md') && e.message.includes('status mismatch')
+      ),
+      'validateDocsTree must detect status mismatch between docs/bugs/README.md and BUG_*.md'
+    );
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('Seam 15: Viewer Core TypeScript Declaration Parity, Full Cross-Catalog/Summary Parity, Escaped-Pipe Jira Table Handling, and CLI Flag Uniformity', async () => {
+  // 1. Verify scripts/viewer-core.d.mts declares every single runtime export of scripts/viewer-core.mjs
+  const viewerCoreModule = await import('./viewer-core.mjs');
+  const dtsPath = path.join(REPO_ROOT, 'scripts', 'viewer-core.d.mts');
+  const dtsContent = fs.readFileSync(dtsPath, 'utf8');
+  const runtimeExports = Object.keys(viewerCoreModule);
+  assert.ok(runtimeExports.length >= 60, `Expected >= 60 runtime exports in viewer-core.mjs, got ${runtimeExports.length}`);
+  for (const sym of runtimeExports) {
+    const declRegex = new RegExp(`\\bexport\\s+(?:const|function)\\s+${sym}\\b`);
+    assert.match(
+      dtsContent,
+      declRegex,
+      `scripts/viewer-core.d.mts is missing declaration for runtime export "${sym}"`
+    );
+  }
+  assert.match(dtsContent, /\bhead:\s*readonly\s+string\[\]/, 'ExportSheet in viewer-core.d.mts must match runtime head property');
+  assert.match(dtsContent, /\bstatusCol\?:\s*number/, 'ExportSheet in viewer-core.d.mts must match runtime statusCol property');
+
+  const parserTsContent = fs.readFileSync(
+    path.join(REPO_ROOT, 'scripts', 'testcases-viewer', 'src', 'lib', 'parser.ts'),
+    'utf8'
+  );
+  assert.match(
+    parserTsContent,
+    /export\s+type\s*\{[^}]*TestCase[^}]*\}/,
+    'testcases-viewer/src/lib/parser.ts must re-export shared types from viewer-core.mjs'
+  );
+
+  // 2. Verify module-scoped validateDocsTree(REPO_ROOT, { module: 'login' }) and CLI --check --module=login
+  const loginOnlyValidation = validateDocsTree(REPO_ROOT, { module: 'login' });
+  assert.equal(loginOnlyValidation.valid, true);
+  assert.deepEqual(loginOnlyValidation.modules, ['login']);
+  assert.equal(loginOnlyValidation.stats.totalReqs, 43);
+  assert.equal(loginOnlyValidation.stats.totalTcs, 50);
+  assert.equal(loginOnlyValidation.stats.totalBugs, 6);
+
+  const cliCheckLoginOut = execFileSync(
+    process.execPath,
+    [path.join(REPO_ROOT, 'scripts', 'validate-docs.mjs'), '--check', '--module=login', '--json'],
+    { encoding: 'utf8' }
+  );
+  const cliCheckLoginJson = JSON.parse(cliCheckLoginOut);
+  assert.equal(cliCheckLoginJson.valid, true);
+  assert.deepEqual(cliCheckLoginJson.modules, ['login']);
+
+  // 3. Verify Requirements Catalog count parity, Reverse Bug Catalog parity, and Execution Report Section 1 summary count parity
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wave8-parity-test-'));
+  try {
+    const reqDir = path.join(tmpRoot, 'docs', 'requirements', 'orders');
+    const tcDir = path.join(tmpRoot, 'docs', 'testcases', 'orders');
+    const bugDir = path.join(tmpRoot, 'docs', 'bugs', 'orders');
+    const execDir = path.join(tmpRoot, 'docs', 'executions', 'orders', 'run_1');
+    fs.mkdirSync(reqDir, { recursive: true });
+    fs.mkdirSync(tcDir, { recursive: true });
+    fs.mkdirSync(bugDir, { recursive: true });
+    fs.mkdirSync(execDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(reqDir, 'requirements_orders.md'),
+      [
+        '# Requirements Orders',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-ORD-01 | Create Order | Desc | AC | 🟢 | — | DOM |',
+        '| REQ-ORD-02 | Cancel Order | Desc | AC | 🟢 | — | DOM |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    // Requirements Catalog declares 5 REQs (REQ-ORD-01 -> REQ-ORD-05 (5)) when module only has 2 REQs
+    fs.writeFileSync(
+      path.join(tmpRoot, 'docs', 'requirements', 'README.md'),
+      [
+        '# Danh mục Requirements',
+        '## 1. Bảng danh mục module',
+        '| Module | Prefix | Trạng thái recon | Mức phủ tài liệu | Tài liệu | REQ đã dùng | Mã kế tiếp | AMB treo | Cập nhật |',
+        '|---|---|---|---|---|---|---|---|---|',
+        '| Orders | `ORD` | ✅ Đã có tài liệu | 🟩 Đầy đủ | [orders/requirements_orders.md](orders/requirements_orders.md) | `REQ-ORD-01` → `REQ-ORD-05` (5) | `REQ-ORD-06` | — | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(tcDir, 'test_cases_orders.md'),
+      [
+        '# Test Cases — Orders',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| CRM_ORD_TC_001 | REQ-ORD-01 | ORD | High | Create order | None | 1. Go | None | 1. Ok | High | Yes | UI | @Smoke |',
+        '| CRM_ORD_TC_002 | REQ-ORD-02 | ORD | Medium | Cancel order | None | 1. Go | None | 1. Ok | Medium | Yes | UI | @Regression |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    // Two BUG_*.md files on disk, but docs/bugs/README.md only lists the first one
+    for (const [id, tc, req] of [
+      ['BUG_orders_1787000001_TC001', 'CRM_ORD_TC_001', 'REQ-ORD-01'],
+      ['BUG_orders_1787000002_TC002', 'CRM_ORD_TC_002', 'REQ-ORD-02'],
+    ]) {
+      fs.writeFileSync(
+        path.join(bugDir, `${id}.md`),
+        [
+          `# [BUG] Issue ${id}`,
+          '## Thông tin chung',
+          `- **ID:** ${id}`,
+          '- **Severity:** 🟠 Major',
+          '- **Priority:** P2',
+          '- **Môi trường:** Staging',
+          '- **Build / Version:** v1.0.0',
+          `- **Test case liên quan:** ${tc}`,
+          `- **REQ ID liên quan:** ${req}`,
+          '- **Ngày phát hiện:** 2026-10-17',
+          '## Steps to Reproduce',
+          '1. Step',
+          '## Expected Result',
+          'Ok',
+          '## Actual Result',
+          'Fail',
+          '## Lịch sử retest',
+          '| Ngày | Build | Kết quả | Retest report | Ghi chú |',
+          '|---|---|---|---|---|',
+        ].join('\n'),
+        'utf8'
+      );
+    }
+
+    fs.writeFileSync(
+      path.join(tmpRoot, 'docs', 'bugs', 'README.md'),
+      [
+        '# Danh mục Bug',
+        '| Mã bug | Module | Tiêu đề ngắn | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+        '|---|---|---|---|---|---|---|---|',
+        '| [BUG_orders_1787000001_TC001](orders/BUG_orders_1787000001_TC001.md) | `ORD` | Issue 1 | 🟠 Major | P2 | 🔴 Đang mở | `CRM_ORD_TC_001` | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    // Execution report where Section 1 summary declares PASS=10, Tổng=10 but Section 2 has only 2 rows (1 PASS, 1 FAIL)
+    fs.writeFileSync(
+      path.join(execDir, 'execution_report.md'),
+      [
+        '# Execution Report — Orders',
+        '## 1. Tổng kết',
+        '| Trạng thái | Số lượng | Tỷ lệ |',
+        '|---|---|---|',
+        '| ✅ PASS | 10 | 100% |',
+        '| ❌ FAIL | 0 | 0% |',
+        '| **Tổng** | **10** | 100% |',
+        '## 2. Kết quả từng TC',
+        '| TC ID | Test Scenario | Kết quả | Bước fail | Ghi chú |',
+        '|---|---|---|---|---|',
+        '| CRM_ORD_TC_001 | Create order | ✅ PASS | — | — |',
+        '| CRM_ORD_TC_002 | Cancel order | ❌ FAIL | 1 | Error |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    const res = validateDocsTree(tmpRoot);
+    assert.equal(res.valid, false);
+    assert.ok(
+      res.referentialErrors.some(
+        (e) => e.file.includes('requirements/README.md') && e.message.includes('REQ đã dùng')
+      ),
+      'validateDocsTree must detect Requirements Catalog "REQ đã dùng" count mismatch'
+    );
+    assert.ok(
+      res.referentialErrors.some(
+        (e) =>
+          e.file.includes('bugs/README.md') &&
+          e.message.includes('BUG_orders_1787000002_TC002') &&
+          e.message.includes('missing from Bug Catalog')
+      ),
+      'validateDocsTree must detect BUG_*.md file on disk that is missing from docs/bugs/README.md'
+    );
+    assert.ok(
+      res.referentialErrors.some(
+        (e) =>
+          e.file.includes('execution_report.md') &&
+          e.message.includes('summary count mismatch for "PASS"')
+      ),
+      'validateDocsTree must detect Execution report Section 1 PASS count mismatch against Section 2 rows'
+    );
+    assert.ok(
+      res.referentialErrors.some(
+        (e) =>
+          e.file.includes('execution_report.md') &&
+          e.message.includes('summary total mismatch')
+      ),
+      'validateDocsTree must detect Execution report Section 1 total count mismatch against Section 2 rows'
+    );
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+
+  // 4. Verify escaped-pipe (\|) handling in markdownToAdf and updateBugsCatalogWithJiraKey
+  const { markdownToAdf } = await import('./integrations/jira/utils.js');
+  const { updateBugsCatalogWithJiraKey } = await import('./integrations/jira/jira_bug_creator.js');
+
+  const adfDoc = markdownToAdf(
+    [
+      '| Field | Expression |',
+      '|---|---|',
+      '| Bitwise OR | `a \\| b` |',
+    ].join('\n')
+  );
+  const tableNode = adfDoc.content.find((n) => n.type === 'table');
+  assert.ok(tableNode, 'markdownToAdf must produce a table node');
+  const dataRowCells = tableNode.content[1].content;
+  assert.equal(dataRowCells.length, 2, 'Escaped pipe \\| must not split table row into 3 cells');
+  assert.equal(dataRowCells[1].content[0].content[0].text, 'a | b');
+
+  const tmpBugDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jira-bug-catalog-pipe-'));
+  try {
+    const readmePath = path.join(tmpBugDir, 'README.md');
+    fs.writeFileSync(
+      readmePath,
+      [
+        '# Danh mục Bug',
+        '| Mã bug | Module | Tiêu đề ngắn | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+        '|---|---|---|---|---|---|---|---|',
+        '| [BUG_login_1](login/BUG_login_1.md) | `LOGIN` | Lỗi A \\| B | 🟠 Major | P2 | 🔴 Đang mở (OLD-1) | `CRM_LOGIN_TC_001` | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+    const updated = updateBugsCatalogWithJiraKey(readmePath, 'BUG_login_1', 'NEW-2');
+    assert.equal(updated, true);
+    const afterText = fs.readFileSync(readmePath, 'utf8');
+    assert.match(afterText, /🔴 Đang mở \(NEW-2\)/, 'Must replace (OLD-1) with (NEW-2) in column 6 even when title has escaped pipe \\|');
+    assert.doesNotMatch(afterText, /OLD-1/, 'Must not leave stale (OLD-1) key in status cell');
+  } finally {
+    fs.rmSync(tmpBugDir, { recursive: true, force: true });
+  }
+
+  // 5. Verify CLI --help and --root=<dir> flags across sync-antigravity.mjs and browser-mode.mjs
+  const syncHelp = execFileSync(
+    process.execPath,
+    [path.join(REPO_ROOT, 'scripts', 'sync-antigravity.mjs'), '--help'],
+    { encoding: 'utf8' }
+  );
+  assert.match(syncHelp, /Usage:\s*node scripts\/sync-antigravity\.mjs/);
+
+  const syncCheckRootEq = execFileSync(
+    process.execPath,
+    [path.join(REPO_ROOT, 'scripts', 'sync-antigravity.mjs'), '--check', `--root=${REPO_ROOT}`],
+    { encoding: 'utf8' }
+  );
+  assert.match(syncCheckRootEq, /100% in sync/);
+
+  const bmHelp = execFileSync(
+    process.execPath,
+    [path.join(REPO_ROOT, 'scripts', 'browser-mode.mjs'), '--help'],
+    { encoding: 'utf8' }
+  );
+  assert.match(bmHelp, /Usage:\s*node scripts\/browser-mode\.mjs/);
+
+  const bmStatusRootEq = execFileSync(
+    process.execPath,
+    [path.join(REPO_ROOT, 'scripts', 'browser-mode.mjs'), 'status', `--root=${REPO_ROOT}`],
+    { encoding: 'utf8' }
+  );
+  assert.match(bmStatusRootEq, /Browser Execution Mode:/);
+
+  // 6. Verify sub-variant TC IDs (-a, -b) in parseExecutionReport Section 3 merge & computeExecutionTrend
+  const variantExecMd = [
+    '# Execution Report — Login',
+    '## 1. Tổng kết',
+    '| Trạng thái | Số lượng | Tỷ lệ |',
+    '|---|---|---|',
+    '| ❌ FAIL | 1 | 100% |',
+    '| **Tổng** | **1** | 100% |',
+    '## 2. Kết quả từng TC',
+    '| TC ID | Test Scenario | Kết quả | Bước fail | Ghi chú |',
+    '|---|---|---|---|---|',
+    '| CRM_LOGIN_TC_018-a | Variant A | ❌ FAIL | 2 | Err |',
+    '## 3. Chi tiết TC FAIL',
+    '### FAIL #1 — CRM_LOGIN_TC_018-a · Variant A',
+    '| Thông tin | Nội dung |',
+    '|---|---|',
+    '| REQ ID | REQ-LOGIN-01 |',
+    '| Expected | Pass |',
+    '| Actual | Fail |',
+  ].join('\n');
+  const parsedVariantExec = viewerCoreModule.parseExecutionReport(
+    variantExecMd,
+    'docs/executions/login/run_100/execution_report.md'
+  );
+  assert.equal(
+    parsedVariantExec.tcs.length,
+    1,
+    'Section 3 FAIL detail with sub-variant TC ID must merge into Section 2 row without creating a phantom duplicate row'
+  );
+  assert.equal(parsedVariantExec.tcs[0].id, 'CRM_LOGIN_TC_018-a');
+  assert.equal(parsedVariantExec.tcs[0].reqId, 'REQ-LOGIN-01');
+
+  const parsedVariantRetest = viewerCoreModule.parseExecutionReport(
+    [
+      '# Retest Report — Login · RETEST',
+      '| Thông tin | Nội dung |',
+      '|---|---|',
+      '| Retest ID | retest_110 |',
+      '## 2. Kết quả từng bug',
+      '### BUG_login_1 — Fix Variant A',
+      '| Thông tin | Nội dung |',
+      '|---|---|',
+      '| Bug | BUG_login_1 |',
+      '| TC / REQ liên quan | CRM_LOGIN_TC_018-a · REQ-LOGIN-01 |',
+      '| **Kết quả** | ✅ FIXED |',
+    ].join('\n'),
+    'docs/executions/login/retest_110/retest_report.md'
+  );
+  const parsedBaseExec = viewerCoreModule.parseExecutionReport(
+    variantExecMd.replace(/CRM_LOGIN_TC_018-a/g, 'CRM_LOGIN_TC_018'),
+    'docs/executions/login/run_100/execution_report.md'
+  );
+  const trendRows = viewerCoreModule.computeExecutionTrend([parsedBaseExec, parsedVariantRetest]);
+  assert.equal(trendRows.length, 1, 'computeExecutionTrend must correlate base TC ID with sub-variant retest TC ID');
+  assert.equal(trendRows[0].grp, 'FIXEDTREND');
+
+  // 7. Verify Jira severity->priority fallback, word-boundary Jira key writeback, -h flag, and Xray parameterized worst-status precedence
+  const { parseCliArgs } = await import('./integrations/jira/utils.js');
+  const { buildJiraBugPayload, updateBugMarkdownWithJiraKey } = await import(
+    './integrations/jira/jira_bug_creator.js'
+  );
+  const { convertPlaywrightToXray, convertJunitXmlToXray } = await import(
+    './integrations/jira/xray_importer.js'
+  );
+
+  assert.equal(parseCliArgs(['-h']).help, true, 'parseCliArgs must support -h short flag');
+  const critBugNoPriority = viewerCoreModule.parseBugFile(
+    '# [BUG] Crash\n## Thông tin chung\n- **ID:** BUG_1\n- **Severity:** 🔴 Critical\n',
+    'BUG_1.md'
+  );
+  const critPayload = buildJiraBugPayload(critBugNoPriority, { projectKey: 'PROJ' });
+  assert.equal(
+    critPayload.fields.priority.name,
+    'Highest',
+    'buildJiraBugPayload must map uppercase CRITICAL severity from parseBugFile to Highest priority when priority is omitted'
+  );
+
+  const tmpCollisionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jira-collision-test-'));
+  try {
+    const readmeCollisionPath = path.join(tmpCollisionDir, 'README.md');
+    fs.writeFileSync(
+      readmeCollisionPath,
+      [
+        '# Danh mục Bug',
+        '| Mã bug | Module | Tiêu đề ngắn | Severity | Priority | Trạng thái | TC liên quan | Ngày phát hiện |',
+        '|---|---|---|---|---|---|---|---|',
+        '| [BUG_login_10](login/BUG_login_10.md) | `LOGIN` | Bug 10 | 🟠 Major | P2 | 🔴 Đang mở (PROJ-10) | `CRM_LOGIN_TC_010` | 2026-10-17 |',
+        '| [BUG_login_1](login/BUG_login_1.md) | `LOGIN` | Bug 1 | 🟠 Major | P2 | 🔴 Đang mở | `CRM_LOGIN_TC_001` | 2026-10-17 |',
+      ].join('\n'),
+      'utf8'
+    );
+    assert.equal(
+      updateBugsCatalogWithJiraKey(readmeCollisionPath, 'BUG_login_1', 'PROJ-1'),
+      true,
+      'updateBugsCatalogWithJiraKey must not skip PROJ-1 just because PROJ-10 exists in README.md'
+    );
+    const collisionReadmeAfter = fs.readFileSync(readmeCollisionPath, 'utf8');
+    assert.match(collisionReadmeAfter, /BUG_login_10.*🔴 Đang mở \(PROJ-10\)/);
+    assert.match(collisionReadmeAfter, /BUG_login_1\b.*🔴 Đang mở \(PROJ-1\)/);
+
+    const bugMdCollisionPath = path.join(tmpCollisionDir, 'BUG_login_1.md');
+    fs.writeFileSync(
+      bugMdCollisionPath,
+      '# [BUG] Related to PROJ-10\n## Thông tin chung\n- **ID:** BUG_login_1\n',
+      'utf8'
+    );
+    assert.equal(
+      updateBugMarkdownWithJiraKey(bugMdCollisionPath, 'PROJ-1'),
+      true,
+      'updateBugMarkdownWithJiraKey must not skip PROJ-1 when PROJ-10 appears in bug prose'
+    );
+    assert.match(fs.readFileSync(bugMdCollisionPath, 'utf8'), /- \*\*Jira Issue:\*\* PROJ-1/);
+  } finally {
+    fs.rmSync(tmpCollisionDir, { recursive: true, force: true });
+  }
+
+  const pwParameterized = convertPlaywrightToXray({
+    suites: [
+      {
+        specs: [
+          {
+            title: '[PROJ-201] Login [param 1]',
+            tests: [{ results: [{ status: 'failed', error: { message: 'Boom' } }] }],
+          },
+          {
+            title: '[PROJ-201] Login [param 2]',
+            tests: [{ results: [{ status: 'passed' }] }],
+          },
+        ],
+      },
+    ],
+  });
+  assert.equal(
+    pwParameterized.payload.tests[0].status,
+    'FAILED',
+    'convertPlaywrightToXray must preserve worst-status precedence (FAILED over PASSED) across parameterized iterations'
+  );
+
+  const junitParameterized = convertJunitXmlToXray(
+    '<testsuite><testcase name="[PROJ-201] iter 1"><failure message="Boom"/></testcase><testcase name="[PROJ-201] iter 2"/></testsuite>'
+  );
+  assert.equal(
+    junitParameterized.payload.tests[0].status,
+    'FAILED',
+    'convertJunitXmlToXray must preserve worst-status precedence (FAILED over PASSED) across parameterized iterations'
+  );
+
+  // 8. Verify secondary-system --module=_book-api/auth filtering, duplicate REQ/TC ID detection, and docs/testcases/<module>/impact/*.md validation
+  const tmpSecRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-system-and-dup-test-'));
+  try {
+    const secReqDir = path.join(tmpSecRoot, 'docs', 'requirements', '_book-api', 'auth');
+    const secTcDir = path.join(tmpSecRoot, 'docs', 'testcases', '_book-api', 'auth');
+    const secTcImpactDir = path.join(secTcDir, 'impact');
+    fs.mkdirSync(secReqDir, { recursive: true });
+    fs.mkdirSync(secTcImpactDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(secReqDir, 'requirements_auth.md'),
+      [
+        '# Requirements Book API Auth',
+        'See [broken](missing_target.md)',
+        '| REQ ID | Tên yêu cầu | Mô tả | Acceptance Criteria | Trạng thái | Cập nhật lần cuối | Nguồn |',
+        '|---|---|---|---|---|---|---|',
+        '| REQ-BK-AUTH-05 | Token Auth | Desc | AC | 🟢 | — | API |',
+        '| REQ-BK-AUTH-05 | Duplicate Token Auth | Desc | AC | 🟢 | — | API |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(secTcDir, 'test_cases_auth.md'),
+      [
+        '# Test Cases Book API Auth',
+        '| TC ID | REQ ID | Module | Risk Level | Test Scenario | Pre-Condition | Test Steps | Test Data | Expected Result | Priority | Automatable | Auto Type | Tags |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+        '| BK_AUTH_TC_001 | REQ-BK-AUTH-05 | AUTH | High | Token 1 | None | 1. Call | None | 1. 200 | High | Yes | API | @Smoke |',
+        '| BK_AUTH_TC_001 | REQ-BK-AUTH-05 | AUTH | High | Duplicate Token 1 | None | 1. Call | None | 1. 200 | High | Yes | API | @Smoke |',
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(secTcImpactDir, 'delta_plan.md'),
+      '# Delta TC Plan\nImpacts `BK_AUTH_TC_999` and `REQ-BK-AUTH-99`.\n',
+      'utf8'
+    );
+
+    const scopedSecRes = validateDocsTree(tmpSecRoot, { module: '_book-api/auth' });
+    assert.equal(scopedSecRes.valid, false);
+    assert.equal(
+      scopedSecRes.brokenPointers.length,
+      1,
+      'validateDocsTree with module: "_book-api/auth" must check markdown pointers inside docs/*/_book-api/auth/'
+    );
+    assert.ok(
+      scopedSecRes.referentialErrors.some((e) => e.message.includes('Duplicate REQ ID "REQ-BK-AUTH-05"')),
+      'validateDocsTree must detect duplicate REQ ID definitions'
+    );
+    assert.ok(
+      scopedSecRes.referentialErrors.some((e) => e.message.includes('Duplicate TC ID "BK_AUTH_TC_001"')),
+      'validateDocsTree must detect duplicate TC ID definitions'
+    );
+    assert.ok(
+      scopedSecRes.referentialErrors.some(
+        (e) => e.file.includes('testcases/_book-api/auth/impact/delta_plan.md') && e.message.includes('BK_AUTH_TC_999')
+      ),
+      'validateDocsTree must validate TC IDs referenced in docs/testcases/<module>/impact/*.md'
+    );
+  } finally {
+    fs.rmSync(tmpSecRoot, { recursive: true, force: true });
+  }
+});
+
+
 
 
 
